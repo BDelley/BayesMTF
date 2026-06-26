@@ -670,6 +670,7 @@ c xp,yp, xi,yi
 
       if(come_in) then
       if(drx.and.dry) then
+        sml = ' m'
         write(iout,'(2f8.2,2a,9(f9.2,f8.2))') xc,yc,sml,' %fndi'
      I   ,xj,yj,xo,yo
         sml = ' l'
@@ -677,7 +678,7 @@ c xp,yp, xi,yi
         write(iout,'(2f8.2,2a,9(f9.2,f8.2))') xb,yb,sml,' %fnde' ! needed for g0.ps log9945_g
 !    I   ,xj,yj,xo,yo
        endif
-        j=1                 ! dies not work for case log9945_g g0.ps
+        j=1                 ! does not work for case log9945_g g0.ps
       endif
 !       come_in = .false.   ! 260107bd commented out
         draw=.true.         ! inserted 260107bd ??
@@ -761,6 +762,7 @@ c xp,yp, xi,yi
        if(come_in) then
         write(iout,'(2f8.2,2a,9(f9.2,f8.2))') xc,yc,sml,' %->in'
      I   ,xj,yj,xo,yo
+         sml=' l'
        endif
        if( xo.lt.xmins) then ! go out
         yb = yj + (yo-yj)*(xmins-xj)/(xo-xj)
@@ -786,7 +788,7 @@ c xp,yp, xi,yi
        endif
       endif
       endif
-        xc=xb      ! assing current point perhaps put on border to xc for output
+        xc=xb      ! assign current point perhaps put on border to xc for output
         yc=yb
 
 !     if(xb.le.xmaxs .and. yb.le.ymaxs .and.

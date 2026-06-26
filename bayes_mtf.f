@@ -51,7 +51,7 @@
         integer, allocatable :: ipix(:,:), ipxy(:,:), jpix(:,:) !,idelt(:,:)
         integer iw,ih,imdn, lenf
         integer iw1,iw2,ih1,ih2
-        integer ktrpm, monochrom
+        integer ktrpm, monochrom, nnull
         real    gain,rn,darkthres
         character*2 ptype
         character*128 filen
@@ -59,15 +59,10 @@
       end module image_data
 
       module esf_data
-!       implicit none
         parameter( ns=32)
         parameter( mprplo=5 ) ! 4,5 mprbay 1,3,5,9 
 
         parameter( thed = 16. )               ! trapezoid minimum parameter
-!       parameter( iroip= np/2, iroin= np/2 )
-!       parameter( iroip= np  , iroin= np/2 )
-!       parameter( iroip= np/2, iroin= np/2 +1 )
-!       parameter( iroip= np*2, iroin= np/2 +1 )
         parameter( throutly=3.0 )  ! outlyer threshold 3 sigma of pixel noise according hypothesis
 
 ! Z8 raw 8280x5520 36x24 4.3478 4.3478   8256x5504  35.9x23.9 4.3484 4.3423 
@@ -94,8 +89,7 @@
         real, allocatable :: yrfm(:)
         real    phi,pos0,fil(4),ve(2),vm(2),vn(2)
         real    phi0,fil0(2),vm0(2),ve0(2),vn0(2)
-!       real    ymap(0:63) 
-!       integer indx(nhist)
+!       real    ymap(0:63),yrfmap(0:63)           !umapper
         logical debug
       end module esf_data
 
@@ -179,7 +173,8 @@
             call ck_edge( ktrp, kedg, edgeok )
 
             anor =  edge(3,kedg,ktrp)  ! length of edge
-            roip = min( anor*0.4, float(iroip))
+!           roip = min( anor*0.4, float(iroip))         ! needed back in for chart
+            roip = float(iroip)                         ! out to frame OK for blade
 
             if(mprbay.gt.0) then
              if(mprtra.gt.1) write(6,'(a)')'one-line-summary:'
@@ -610,7 +605,7 @@
        logical crop,search,dotr,found
 
 !     if(np.eq.64 .and. umapper) then
-!     write(line,'(9a)')'mtf_mapper ',filen,
+!     write(line,'(9a)')'mtf_mapper ',filen(1:lenf),
 !    I '  . -q  --bayer green --single-roi --esf-model loess'
 !     write(6,'(/9a)')'ck_line ',line
 !     call system(line) 
@@ -839,9 +834,9 @@
         enddo
       enddo
 
-      do j=nmm,mn
-        write(16,'(9i10)')(ihisto(i,j),i=1,4),j,(icum(i,j),i=1,4)
-      enddo
+!     do j=nmm,mn
+!       write(16,'(9i10)')(ihisto(i,j),i=1,4),j,(icum(i,j),i=1,4)
+!     enddo
 
       if(mprtra.gt.1)
      I write(6,'(/a,2i12)')
@@ -1860,6 +1855,25 @@
           endif
          enddo
 
+!     if(umapper) then
+!        yrfmap(0)= 1
+!        bpm = 1.0/64.0
+!        bpmx=bpm/pix
+!        do i=1,63
+!         x = i*bpm*apixm
+!         papti =     sinc(pi*x*sth)*sinc(pi*x*cth)
+!         ff = i*bpmx*dct
+!         if(ff.ge.one) then
+!          yrfmap(i) = 0
+!         else
+!          sq = sqrt(one -ff*ff)
+!          circi = pre*( acos(ff) - ff*sqrt(one -ff*ff) )   ! circular aperture MTF
+!          yrfmap(i) = circi*papti
+c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
+!         endif
+!        enddo
+!     endif
+
       return
       end
 
@@ -1869,6 +1883,7 @@
       use image_data
       use esf_data
       use fit_data
+      use plot_data_compare , only : apixm
       character*40 fmt
         damp = 1.0  ! mixing parameters, 1: Newton no damping 
         damp1= 1.0  
@@ -1921,6 +1936,7 @@
       call getesfd
       ihys=0
         keep_roi=.false.
+        nnull=0
 !       if(mprplo.gt.4) call mkploto
 !     call timeb(-1,'other')
 !     call walltime(wtime0,'other',2)
@@ -1968,9 +1984,9 @@
 !     call walltime(wtime0,'other',2)
 
         if(mprbay.gt.2 .and. .not.keep_roi) then
-!       if(.not.keep_roi) then
           write(6,'(a)')'Resetting ROI'
         endif
+        if(.not.keep_roi) nnull=0
 
        if(mprbay.gt.2) then
         write(6,fmt)'Coef',jtn,npar
@@ -2186,8 +2202,46 @@
        if(mprplo.gt.0) call mkplotf
        if(mprplo.gt.1) call mkploth
        call mkplotc
-       call checkgap
        if(ucurv) call mkplotz
+       if(nnull.gt.0) then
+         write(6,'(/a,i5,a)')'Warning: ROI contains',nnull,
+     I  ' pixel values <=0 , results are not trust worthy!'
+         write(6,'(2a)')
+     I  ' a smaller ROI may avoid the problematic sub-region ',
+     I  '(try a reduced np value)'
+       endif
+       if(conv.gt.0.03) then
+        write(6,'(/a,f10.6,a)')'Warning: OTF not converged',conv,
+     I  ', results are wrong!'
+       elseif(conv.gt.0.001 ) then
+        write(6,'(/a,f10.6,a)')'Warning: OTF not converged',conv,
+     I  ' results are not trust worthy or wrong!'
+       else
+        i=1
+        do while( yr(i)**2+yi(i)**2 .gt.0.25 )
+          i=i+1
+        enddo
+        y2 = sqrt(yr(i)**2+yi(i)**2)
+        i=i-1
+        y1 = sqrt(yr(i)**2+yi(i)**2)
+        p = (0.5-y1)/(y2-y1)
+        xm = cpix(i) +p/np
+        if(apixm.gt.0) then
+         i=1
+         do while( yrfm(i) .gt.0.5 )
+          i=i+1
+         enddo
+         y2 = yrfm(i)
+         i=i-1
+         y1 = yrfm(i)
+         p = (0.5-y1)/(y2-y1)
+         xmm = cpix(i) +p/np
+       write(6,'(/a,9(f6.3,a))')'MTF50=',xm,' c/p  MTF50ref=',xmm,' c/p'
+        else
+         write(6,'(/a,9(f6.3,a))')'MTF50=',xm,' c/p'
+        endif
+       endif
+       call checkgap
 
        return
        end
@@ -2212,7 +2266,8 @@
 
       yfuns = 0
       i=roip
-      diam=14000./(sqrt(imdn+1.)*max(i,iroin))
+      diam = 160.*sqrt(2.0-monochrom)/(2*max(iroip,iroin))
+!     write(6,'(a,2i5,f10.5)')'ck_diam',iroip,iroin,diam
       diamin = 0.25*diam*roip/32.
       diamin = min( 0.85*diam, diamin)
       if(uqspl)then
@@ -2222,6 +2277,7 @@
           enddo
         enddo
       endif
+!     nnull=0
 
       bs = 1.0/ns
       ij = 0   !  data point
@@ -2257,6 +2313,10 @@
                 ipxy(2,ij) = j
 !      if(ij.eq.1) write(6,'(a,l2,9i9)')'ck_BAY',keep_roi,ij,
 !    I j,ipxy(2,ij),i,ipxy(1,ij),iw1,iw2,ih1,ih2
+                if(raw.le.0.) then
+                  nnull=nnull+1
+!                 write(6,'(a,3i5)')'ck_W',i,j,nnull
+                endif
               endif
             endif
             if(activ) then
@@ -2303,6 +2363,7 @@
 !             rms2 = raw*gain !   approach a) my not so good standard before 250803bd
 !             rms2 = hypo*gain !  approach b,c)   starting with l8331l
       rms2 = hypo*gain + (hypo*fp)**2 + f0**2 + (csfi0*fil(2)*fh)**2  ! approach b with fp f0 fh 251021bd, 260102bd
+      rms2 = max( 1.0, rms2 )
          
       postlog  = 0.5*( dev*dev/rms2 -1)
 !!            av = hypo*cgain
@@ -2447,6 +2508,7 @@
       end
 
       function sinc(x)
+
       if(x.eq.0) then
         sinc = 1.
       else
@@ -2507,8 +2569,11 @@
       enddo
       xfmt='i4'
       yfmt='i4'
-      xle = (xmax-xmin)*190./300.
-      yle = (ymax-ymin)*190./300.
+      xle = (xmax-xmin)  
+      yle = (ymax-ymin)  
+      gle = max(xle,yle)
+      xle = xle*150./gle
+      yle = yle*150./gle
 
        call frameb(xmin,xmax, xle, nx, xtick, xtick, xfmt,
      I             ymin,ymax, yle, ny, ytick, yval, yfmt,
@@ -2522,18 +2587,50 @@
         db(3) = ymax
         da(4) = xmin
         db(4) = ymax
-      call areargb(4,da,db, 0.3,0.3 ,0.3)          
+      call areargb(4,da,db, 0.3,0.3 ,0.3)          ! background
+
+      if( max(i2,j2) .gt. 192) then
+        ifac=7
+      elseif( max(i2,j2) .gt. 64) then
+        ifac=3
+      else
+        ifac=1
+      endif
+      do i=i1,i2,ifac
+        do j=j1,j2,ifac
+          ii=mod(i+1,2)
+          jj=mod(j+1,2)
+          kk=2*ii+jj+1
+!         dxp = j-vm(1)
+!         dyp = i-vm(2)
+          if(monochrom.eq.1) then ! full lattice
+            raw = ipix(j  ,i  ) ! - iblack
+            dd = 0.9*ifac*sqrt(raw/(fil(1)+fil(2)))*xle/(j2-j1)
+            da1 = +j
+            db1 = -i
+            call symbrgb(1, da1, db1, dd, 0.9, 0.9, 0.9) ! white dots
+          elseif(kk.eq.2 .or. kk.eq.3) then 
+            raw = ipix(j  ,i  ) ! - iblack
+            dd = 1.2*ifac*sqrt(raw/(fil(1)+fil(2)))*xle/(j2-j1)
+            da1 = +j
+            db1 = -i
+            call symbrgb(1, da1, db1, dd, 0.9, 0.9, 0.9) ! white dots
+          endif
+        enddo
+      enddo
+       anor =  edge(3,kedg,ktrp)  ! length of edge
+        da(1) = +vm(1) - 0.5*anor*ve(1)
+        db(1) = -vm(2) + 0.5*anor*ve(2)
+        da(2) = +vm(1) + 0.5*anor*ve(1)
+        db(2) = -vm(2) - 0.5*anor*ve(2)
+      call linrgb(2,da,db, 0.0, 0.7, 0.0)
         da(1) = +vm(1) 
         db(1) = -vm(2) 
         da(2) = +vm(1) + 50*vn(1)
         db(2) = -vm(2) - 50*vn(2)
 !       write(6,'(a,2f8.1,2f9.4)')'ck_v',vm,vn,ve(1),ve(2)
-      call symbrgb(1, da, db, 3., 0.8, 0.0, 0.8)  ! pink dot
-        da(2) = +vm(1) + 50*ve(1)
-        db(2) = -vm(2) - 50*ve(2)
 !     call linrgb(2,da,db, 0.0, 0.7, 0.0)
-        anor =  edge(3,kedg,ktrp)  ! length of edge
-        roip = min( anor*0.4, float(iroip))
+      call symbrgb(1, da, db, 3., 0.8, 0.0, 0.8)  ! pink dot
         da(1) = +vm(1) -ve(1) *roip -vn(1)*iroin
         db(1) = -vm(2) +ve(2) *roip +vn(2)*iroin
         da(2) = +vm(1) -ve(1) *roip +vn(1)*iroin
@@ -2544,30 +2641,7 @@
         db(4) = -vm(2) -ve(2) *roip +vn(2)*iroin
         da(5) = da(1)
         db(5) = db(1)
-
-      do i=i1,i2,7
-        do j=j1,j2,7
-          ii=mod(i+1,2)
-          jj=mod(j+1,2)
-          kk=2*ii+jj+1
-!         dxp = j-vm(1)
-!         dyp = i-vm(2)
-          if(fil(2).gt.17000) then ! full lattice
-            raw = ipix(j  ,i  ) ! - iblack
-            dd = 6.0*sqrt(raw/(fil(1)+fil(2)))*xle/(j2-j1)
-            da1 = +j
-            db1 = -i
-            call symbrgb(1, da1, db1, dd, 0.9, 0.9, 0.9) ! white dots
-          elseif(kk.eq.2 .or. kk.eq.3) then 
-            raw = ipix(j  ,i  ) ! - iblack
-            dd = 7.0*sqrt(raw/(fil(1)+fil(2)))*xle/(j2-j1)
-            da1 = +j
-            db1 = -i
-            call symbrgb(1, da1, db1, dd, 0.9, 0.9, 0.9) ! white dots
-          endif
-        enddo
-      enddo
-      call linrgb(5,da,db, 0.9, 0.0, 0.0)    ! former pink line
+      call linrgb(5,da,db, 0.9, 0.0, 0.0)    ! ROI
 
       call endfrm( nx, xtick, ny, ytick)
 
@@ -2656,15 +2730,13 @@
       call symbrgb(nplo, cpmm, afn, rap, 0.9, 0.0, 0.0)    ! real part OTF  Bayesian inferred
       call symbrgb(nplo, cpmm, dfn, rap, 0.0, 0.0, 0.0)    ! abs OTF  Bayesian inferred
 
-!     if(np.eq.64 .and. umapper) then
-! generate like: mtf_mapper  pix_.ppm . -q  --bayer green  --esf-model loess --single-roi
+!     if(umapper) then
+C generate like: mtf_mapper  pix_.ppm . -q  --bayer green  --esf-model loess --single-roi
 !     open(35,file='edge_sfr_values.txt',iostat=ierr)
 !     if(ierr.eq.0) then
 !       read(35,*)(ymap(i),i=1,5),(ymap(i),i=0,63)
-!       call symbrgb(64,cpmm,ymap,ram, 0.5, 0.7, 1.0)
+c       call symbrgb(64,cpmm,ymap,ram, 0.5, 0.7, 1.0)
 !     endif
-!     else
-        ierr=1
 !     endif
 
       call endfrm( nx, xtick, ny, ytick)
@@ -2790,6 +2862,14 @@
       endif
 
       afn(0)=0
+!     if(ierr.eq.0 .and. umapper) then  ! mtf_mapper for comparison
+!         ymap(0) = 0
+!       do i=1,63
+!         afn(i)=i/64.
+!         ymap(i) = ymap(i) -yrfmap(i)
+!       enddo
+!       call linrgb(64, afn,ymap, 0.3, 0.3, 1.0)
+!     endif
       cfn(0)=0
 !     ymap(0)=0
       do i=1,nmax
@@ -2799,10 +2879,7 @@
         cfn(i) = yr(i) - yrfm(i)
         bfn(i) = yi(i)
       enddo
-!     if(ierr.eq.0 .and. np.eq.64 .and. umapper) then  ! mtf_mapper for comparison
-!     call linrgb(64, cpix,ymap, 0.3, 0.3, 1.0)
-!     endif
-!     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
+c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
       call symbrgb(nplo, cpix, cfn, ram, 0.9, 0.0, 0.0)
       if(uimag)
      Icall symbrgb(nplo, cpix, bfn, ram, 0.0, 0.7, 0.0)
@@ -2873,11 +2950,15 @@
 !     rms = sqrt(fil(2)/cgain)
 !     ymin = max( -0.,fil(1)-2*rms)
       hypo = fil(1)+esf(-nm)*fil(2)
-      rms = sqrt(max( (hypo/cgain + (hypo*fp)**2 +f0**2), hypo*0.1 ))
+      rms = sqrt(max( (hypo/cgain + (hypo*fp)**2 +f0**2), hypo*0.1, 1.))
       db(1)= hypo
       ymin = max( 0., db(1) -6*rms)
 !     ymax = fil(1)+3*rms
       ymax = ymin + 44*rms
+      if(mprbay.gt.5) then
+      write(6,'(a,2i8,9f9.2)')'ploth Minmax',ndat,nm,xmin,xmax,ymin,ymax
+     I ,rms,hypo
+      endif
       hypo =fil(1)+esf(nm)*fil(2)
       rms = sqrt(max( (hypo/cgain + (hypo*fp)**2 +f0**2), hypo*0.1 ))
 !     write(6,'(a,9e12.3)')'ck_,min,max',rms,ymin,ymax
@@ -2901,7 +2982,8 @@
       endif
 
       if(mprbay.gt.5) then
-      write(6,'(a,2i8,4f9.1)')'ploth minmax',ndat,nm,xmin,xmax,ymin,ymax
+      write(6,'(a,2i8,5f9.1)')'ploth minmax',ndat,nm,xmin,xmax,ymin,ymax
+     I ,rms
       endif
 
        call autotic( xtick, nx, xfmt, xmax, xmin)
@@ -2913,9 +2995,10 @@
      I  gfile(1:len) )
 
       jj=0
-      if(iplo.eq.2) write(6,'(/a,i6,a,i4,a,i3,a,9x,a)')
+      if(iplo.eq.2) write(6,'(/a,i6,a,i4,a,i3,a,9x,3a)')
      I 'N',ndat,'  M*',npar-nsing,' <',nint(0.0027*(ndat-npar+nsing)),
-     I '>   pix_posi      sig   x_nor       raw*       hypo        xpa' 
+     I '>   position      sig   x_nor       raw*       hypo        xpa' 
+     I,'< expected number of 3 sigma outliers >'
       rsy = 0.4
       if(iplo.eq.3) rsy = 1.2
       rsyo = 1.5*rsy
@@ -2927,16 +3010,17 @@
         if( abs(brh(i)) .le. throutly) then  
 !       call linrgb(2, da, rk2(1,i), 0.6, 0.6, 0.6)      ! rms error bars
            da(2)=xk1(i,2)
-        call symbrgb(1,da, da(2), rsy, 0.6, 0.6, 0.6)    ! values
+        call symbrgb(1,da(1), da(2), rsy, 0.6, 0.6, 0.6)    ! values
         else  ! mark outliers
 !          rk2(2,i)=(-rk2(2,i)+rk2(1,i))*0.5
            da(2)=xk1(i,2)
 !       call linrgb(2, da, rk2(1,i), 0.9, 0. , 0. )      ! rms error bars outlier
-        call symbrgb(1,da, da(2), rsyo, 0.9, 0., 0.)
+        call symbrgb(1,da(1), da(2), rsyo, 0.9, 0., 0.)
           if(iplo.eq.2) then
            jj=jj+1
           if(jj.le.20) then
-           write(6,'(a,i10,i7,i6,f8.2,f8.2,9f11.2)')'ck_outlier',
+!          write(6,'(a,i10,i7,i6,f8.2,f8.2,9f11.2)')'ck_outlier',
+           write(6,'(a,i7,i7,i6,f8.2,f8.2,9f11.2)')'outlier_pixel',
      I     jj,i,ii,brh(i),(xk1(i,j),j=1,4)
           endif
           ijj=i
@@ -2944,12 +3028,12 @@
           endif
         endif
       enddo
-      if(jj.gt.20) then
-           i=ijj
-           ii=iijj
-           write(6,'(a,i10,i7,i6,f8.2,f8.2,9f11.2)')'ck_outlier',
-     I     jj,i,ii,brh(i),(xk1(i,j),j=1,4)
-      endif
+!     if(jj.gt.20) then
+!          i=ijj
+!          ii=iijj
+!          write(6,'(a,i10,i7,i6,f8.2,f8.2,9f11.2)')'ck_outlier',
+!    I     jj,i,ii,brh(i),(xk1(i,j),j=1,4)
+!     endif
 
       da(1)=xmin+0.1
       da(2)=xmax-0.1
@@ -3671,7 +3755,7 @@ c     mod B.D.
           udes(io,1) = sum                  ! overwritten for fit function output
           cterm = (brh(io)-sum)**2 
           chisq = chisq + cterm               ! brh also contains rmsi^1 factor
-          crh(i) = chisq	
+          crh(i) = chisq
         enddo
 !       zfun = (chisq-ndat)*0.5/ndat
         zfun = (chisq-ndat+npar)*0.5/(ndat-npar)
@@ -3854,7 +3938,7 @@ c     mod B.D.
         daqs = -fra/dfrada
         bqs = xq1/(exp(aqs)-1)
       if(debug) then
-      write(6,'(i6,1p,e10.2,0p19f15.7)')i,daqs,aqs,bqs,
+      write(6,'(i6,1p,e10.2,0p,19f15.7)')i,daqs,aqs,bqs,
      I fra,dfrada,exp(aqs*n),exp(aqs) !,rxq
       endif
         aqs = max( aqs +daqs , aqs*0.8)
