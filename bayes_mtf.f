@@ -1,9 +1,16 @@
 ! program bayes_mtf
 !
+! Copyright 2022-2026 Bernard Delley
+!  Licensed under the Apache License, Version 2.0
+!
 ! Author: B. Delley 2022-2026
 !
 !  B. Delley and Y.L. Delley, "Bayesian approach to slanted edge modulation transfer function (MTF) measurements",
 !  J. Opt. Soc. Am. A 43, xx  (2026)
+!
+! bayes_mtf analyzes slanted edge image files of linear P2 type GrayMap files (non de-Bayered) and with black level 0.
+! a pgm maximum value up to 16383 is interpreted as a command to extract Bayer green from RGGB pixels.
+! a higher maximum value is a command to consider the file as monochrome image.
 !
 ! simple use: (parameters may be default or overridden by supplied by first # comment line in pgm file)
 !   bayes_mtf pix.pgm
@@ -23,44 +30,55 @@
 !     f0 = 0.         ! sigma_0   read noise
 !     fp = 0.         ! c2        pixel response non-uniformity
 !     fh = 0.         ! sigma_e   (blade) slanted edge roughness
-!     pix  = 4.345    ! pixelpitch (in mm internally), input in [mum]
+!     pix  = 4.345    ! pixel pitch (in mm internally), input in [mum], needed for correct c/mm frequencies
 !     alam = 537.     ! nominal light wavelength in [nm]
 !     np   = 64       ! n_p  ROI normal size, base harmonic frequency = 1/n_p
 !     naqs = 16       ! m_Y  'resolution' parameter for spline envelope model Y,
 !                     !    -1 -> full harmonic model y
 !     nes  = 3        ! 1-2 illumination gradient normal, gradient parallel parameters
 !                     ! 3-n  +edge_curvature splines 3:order 3, 1 internal free parameter ~ "curvature"
-!     ity  = 5        ! 5: is standard: 3 iterations for Stage_3 yr,yi and Yr,Yi
+!     ity  = 5        ! 5: is standard: with 3 iterations for Stage_3 yr,yi and Yr,Yi
 !                     !    2: do only real part, stop with Stage_2
 !     mprbay = 1      ! printlevel
-!     nquer = 0       ! -> = np  ROI parallel target value
+!     nquer = 0       ! -> = np  ROI parallel size, target value
 !     apixm = 0       ! pixel aperture for reference OTF. when apixm = 0, then no OTF_deviation_magnified.eps 
                       ! apixm is used in Stage 1, to generate optimal Phi, Dark and Illum_jump to start Stage 2
                       ! pixel aperture is not a parameter in Stage 2,3, 
                       ! an ad-hoc reference OTF gives a hint the sensor pparameter apix
 !     anumm = 0       ! -> anum, N_f of reference OTF
 
-! special call for basic cropping mode for pgm type P2 files. creates pix_crop.pgm file aad exits
-! bayes_mtf  pix_file.pgm  crop  iw1 iw2 ih1 ih2
+! special call for basic cropping and black level removal mode for pgm type P2 files. 
+!  creates pix_crop.pgm file and exits:
+!   bayes_mtf pix.pgm  crop  iw1 iw2 ih1 ih2 iblack
+
+! special calls for MTF map use and debugging (hindered input params can be passed in via pgm comment-input line)
+!  these calls have special defaults anum=8 naqs=12 and ity=10, a convergence threshold limits the number of iterations
+!   bayes_mtf pix.pgm map
+!   bayes_mtf pix.pgm skipto ktrps kedgs
+!   map produces a g_map.eps file showing numbered trapezoids with color coded total system MTFhNyq at each edge.
+!   MTFhNyq is MTF at half Nyqvist frequency for (10) Miller direction. 
+!   color code is as in: B. Delley and F. van den Bergh,
+!   "Fast full-field modulation transfer function analysis for photographic lens quality assessment",
+!   Applied Optics. 60 (8). 2197-2206 (2021)
 
       module image_data
         parameter( mn=65536, nmm=-0)
         parameter( ithsq = 32, itrpe=32 )
-        parameter( mprtra=0 ) ! 0,1,5,9
+        parameter( mprtra=0 ) ! 0,1,2,3,4,5,9
 
         integer, allocatable :: ipix(:,:), ipxy(:,:), jpix(:,:) !,idelt(:,:)
         integer iw,ih,imdn, lenf
-        integer iw1,iw2,ih1,ih2
+        integer iw1,iw2,ih1,ih2, ktrps, kedgs
         integer ktrpm, monochrom, nnull
         real    gain,rn,darkthres
         character*2 ptype
         character*128 filen
-        logical keep_roi 
+        logical keep_roi, skipto
       end module image_data
 
       module esf_data
         parameter( ns=32)
-        parameter( mprplo=5 ) ! 4,5 mprbay 1,3,5,9 
+        parameter( mprplo=9 ) ! 4,5 mprbay 1,3,5,9 
 
         parameter( thed = 16. )               ! trapezoid minimum parameter
         parameter( throutly=3.0 )  ! outlyer threshold 3 sigma of pixel noise according hypothesis
@@ -73,7 +91,7 @@
         integer ncd, npoly, npolym, nparm1, ity, mprbay
         real    pix, bpix, alam, cgain, f0, fh, fp
         real    anum, dcut, fcut, anuf, roip
-        real    y00 ,esfh
+        real    y00 ,esfh, xm50, xhn
         real    one, pi, pi2, pi4, tpi, pii, tpin, pre, pi2deg, epsma
         real, allocatable :: si(:),ci(:)              ! sine cosine tables on oversampled grid
         real, allocatable :: circ(:),papt(:),dcirc(:) ! mtf circular aperture, pixel aperture, derivative circ
@@ -112,7 +130,7 @@
         logical  uxno, uanum, ugrad, ugnor, ucurv ! need to be set correctly for postprob  
         logical  uimag, udark       ! uimag use with splines, uqspl=.true.
         logical  onlyi,uphi,usigd          ! phi now always used "3",  onlyi   not used now
-        logical  uqspl,unats
+        logical  uqspl,unats,domap
       end module fit_data
 
       module plot_data_compare
@@ -137,76 +155,78 @@
       use plot_data_compare
       use plot_data , only : dopos
       character*20 word
-      logical edgeok,exst
+      logical edgeok,exst,do_out_sfr
 
       write(6,'(/2a)')'Bayesian Approach to Slanted Edge',
-     I ' OTF and MTF Measurements, version 260621'
+     I ' OTF and MTF Measurements, version 260701'
       write(6,'(/a)')'Cite work using this program as:'
       write(6,'(a)')
      I '  B. Delley and Y.L. Delley, J. Opt. Soc. Am. A 43, xx  (2026)'
       write(6,'(a)')
 
+      call cpu_time(t0)      !   f95 intrinsic function
       call get_input
 
       call atrpz
 
-!     if(mprtra.gt.1) call timeb(1,'trapezoids')
-!     call walltime(wtime0,'trapezoids',-9)
-!     call walltime(wtime0,'trapezoids',-1)
-
       call preptable
 
+      do_out_sfr=.false.
       if(uqspl) then
          call setqsplin
+         if(np.eq.64) do_out_sfr=.true.
+         if(do_out_sfr) open(36,file='edge_sfr_values.txt')
       else
-        write(6,'(/a,i2,2i4,a,f6.1)')'#_OTF_model_y [',
+!       write(6,'(/a,i2,2i4,a,f6.1)')'#_OTF_model_y [',
+        write(6,'(/a,i2,2i4,a,f6.1)')'OTF_model_y [',
      I  nes,np,2*iroip,']'
       endif
 
-!       write(6,'(/2a)')'    trapezoid     edge_pos      len',
-        write(6,'(/2a)')'      trapezoid     edge_pos      len',
+!       write(6,'(/2a)')'      trapezoid     edge_pos      len',
+        write(6,'(/2a)')'    trapezoid     edge_pos      len',
      I  '     phi     psi   2*roip'
 
-        do ktrp= 1,ktrpm ! 815,815 !731,731  !1,ktrpm  ! e-range
-          do kedg= 1,4  !2,2   !1,4
+        do ktrp= 1,ktrpm 
+         if(ktrps.eq.0 .or. (ktrps.gt.0 .and. ktrp.eq.ktrps)) then
+          do kedg= 1,4
+           if(kedgs.eq.0 .or. (kedgs.gt.0 .and. kedg.eq.kedgs)) then
 
             call ck_edge( ktrp, kedg, edgeok )
 
             anor =  edge(3,kedg,ktrp)  ! length of edge
 !           roip = min( anor*0.4, float(iroip))         ! needed back in for chart
-            roip = float(iroip)                         ! out to frame OK for blade
+            roip = min( anor*0.5-6, float(iroip))       ! now just 5 spare pixels to each side for chart
+!           roip = float(iroip)                         ! out to frame OK for blade
 
-            if(mprbay.gt.0) then
-             if(mprtra.gt.1) write(6,'(a)')'one-line-summary:'
+!            if(mprtra.gt.1) write(6,'(a)')'one-line-summary:'
              phd = phi*pi2deg
              phis = min( abs(phd), abs(phd-90), abs(phd-180), 
      I              abs(phd-270), abs(phd-360))
              
-!      write(6,'(a,L2,i4,i2,6f8.2,2x,5f9.4,2i5)')'ck_X',edgeok,ktrp,kedg
-       write(6,'(a,L2,i4,i2,6f8.2,2x,5f9.4,2i5)')'#_edge',edgeok,ktrp,kedg
-     I  ,(edge(i,kedg,ktrp),i=1,5),2*roip
+!      write(6,'(a,L2,i4,i2,6f8.2,2x,5f9.4,2i5)')'#_edge',edgeok
+       write(6,'(a,L2,i4,i2,6f8.2,2x,5f9.4,2i5)')'edge',edgeok
+     I  ,ktrp,kedg,(edge(i,kedg,ktrp),i=1,5),2*roip
 !    I ,vm,edge(3,kedg,ktrp),phd,phis,edge(5,kedg,ktrp) !,sumry,isumry
-            endif
 
             if(edgeok) then
               call analy2( ktrp, kedg )
               if(mprplo.gt.4) call mkplot0( ktrp, kedg )
               call get_mtf
-!             call out_sfr( ktrp, kedg, phis )
+              phd=phi*pi2deg
+              if(do_out_sfr) call out_sfr( ktrp, kedg, phd )
+              edge(8,kedg,ktrp) = xhn
             endif
 
+           endif ! kedgs
           enddo
+         endif ! ktrps
         enddo
 
+        if(domap) call mkplotm
+
         close(36)
-!     call timeb( 1,'other')
-!     call timeb( 2,'postprob')
-!     call timeb( 3,'svdfitb')
-!     call walltime(wtime0,'read-pix',-9)
-!     call walltime(wtime0,'trapezoids',-1)
-!     call walltime(wtime0,'other',-2)
-!     call walltime(wtime0,'postprob',-3)
-!     call walltime(wtime0,'svdfitb',-4)
+      call cpu_time(tt)      
+      write(6,'(a,f12.1,a,2f20.9)')'CPU time',tt-t0,' s'
 
       write(6,'(a)')'done'
       call exit(0)
@@ -219,12 +239,12 @@
 
 ! input:
 !  pix file  ascii pgm graphics file type P2 with slanted edge raw image  
-!    im max value < 16384 : extract greeen from Bayer RGGB
+!    im max value < 16384 : extract green from Bayer RGGB
 !    im max value > 16383 : interpret as monochrome image (used in example as 8x pixelshift green)
 
 ! Nikon camera file uncomressed or loss-less-compressed raw   pre-processing for input here
 ! dcraw -D -4 -c DSC_????.NEF | pnmtoplainpnm > full_size_file_P2.pgm
-!  the full_size_file needs to be cropped and black level subtracted (400 for D500,D850,Z7,Z8,Z9 etc)
+!  the full_size_file needs to be cropped and black level subtracted (400 for D500,D850, 1008 for Z7,Z8,Z9 etc)
 
 ! args
       use esf_data
@@ -260,8 +280,6 @@
       unats = .true.
 
 
-!     call timeb(1,'start')
-!     call walltime(wtimes,' ',0)
       call setcns
       dopos = .false.
 
@@ -270,11 +288,11 @@
       if(exst) then
       open(15,file=filen)
       else
-        write(6,'(9a)')'Error: file ',filen,' does not exist'
+        write(6,'(9a)')'Error: file ',filen(1:lenf),' does not exist'
         stop 'error image file missing'
       endif
 
-! clean up previous graphical output, so one never gets fooled by leftover stuff whe job has failed
+! clean up previous graphical output, so one never gets fooled by leftover stuff when a job has failed
       fileg='g_ROI_orientation.eps'
       inquire(file=fileg,exist=exst)
       if(exst) then
@@ -308,13 +326,32 @@
 ! for the other file overwriting is good enough: 
 ! g_ESF_bright_side.eps  g_ESF_dark_side.eps  g_ESF.eps  g_ESF_magnified.eps  g_LSF.eps g_ROI_map_outliers.eps
 
-!     len=1
-!     do while(ichar(filen(len:len)).ne.32)
-!       len=len+1
-!     enddo
-!     len=len-1
       lenf = len_trim(filen)
-      call read_image    ! P2 pgm ASCII file, including its supplied parameter values, if any
+      call read_image    ! P2 pgm linear ASCII file, including its supplied parameter values, if any
+
+      if(skipto) then ! deal with special branch
+      call getarg(3,word)    ! arg    ktrps
+      read(word,*,iostat=ierr) inp
+      if(inp.gt.0 .and. ierr.eq.0) then
+        ktrps = inp
+      else
+       write(6,'(a,2i5,3a)')
+     I 'Error: skipto special branch requires ktrps>0',ktrps,ierr
+     I ,'>>',word,'<<'
+        k=k+1
+      endif
+
+      call getarg(4,word)    ! arg    kedgs
+      read(word,*,iostat=ierr) inp
+      if(inp.gt.0 .and. ierr.eq.0) then
+        kedgs = inp
+      else
+       write(6,'(a,i3)')
+     I 'Error: skipto special branch requires kedgs>0',kedgs
+        k=k+1
+      endif
+
+      else ! std input, .not.skipto
 
       k=0
       call getarg(2,word)    ! arg   anum
@@ -339,7 +376,6 @@
       elseif(arg.ne.0) then
         cgain=arg
       endif
-      gain = 1/cgain
 
       call getarg(4,word)    ! arg   f0
       read(word,*,iostat=ierr) arg
@@ -356,6 +392,9 @@
       elseif(arg.gt.0) then
         f0=arg
       endif
+
+      endif ! skipto branch specialty
+      gain = 1/cgain
 
       call getarg(5,word)    ! arg   fp
       read(word,*,iostat=ierr) arg
@@ -535,7 +574,15 @@
       if(anumm.lt.0.5) anumm=anum
       phim = phi
 
+      if(skipto) then
+      write(6,'(/2a)')'detailed call arguments in force:',
+     I'        |> accessible from call with skipto option'
+      elseif(domap) then
+      write(6,'(/2a)')'detailed call arguments in force:',
+     I' (anum input remains accessible through pgm image comment'
+      else
       write(6,'(/a)')'detailed call arguments in force:'
+      endif
       write(6,'(2a,f7.2,f8.3,f6.2,2f8.4,f7.3,f6.0,6i4,f6.2,f7.2)')
      I       'bayes_mtf ',filen(1:lenf),
      I        anum, cgain, f0, fp, fh, pix, alam,
@@ -563,7 +610,7 @@
       endif
 
       if(apixm.le.0) then
-       write(6,'(5(a,f8.3))')'No Reference model defined'
+       write(6,'(5(a,f8.3))')'No Reference model was defined (apix=0)'
       endif
 
         allocate(si(n1:n2),ci(n1:n2),circ(n1:n2),papt(n1:n2),stat=istat)
@@ -590,17 +637,19 @@
 
 ! Author: Bernard Delley 2026
 ! read in image  *pgm    type P2
-!  special branch 'crop iw1 iw2 ih1 ih2' for cropped image: pix_crop.pgm
+!  special branch 'crop iw1 iw2 ih1 ih2 iblack' for cropped image: pix_crop.pgm
+!  special branch 'map' -> mprbay=0  anum=8 naqs=12 ity=10 (with conv threshold)
+!  special branch 'skipto ktrps kedgs' to pick a specific edge from a chart for detailed analysis
 
       use image_data
       use esf_data
-      use fit_data, only : umapper
+      use fit_data, only : umapper,domap
       use plot_data_compare
 
        dimension ihisto(4,nmm:mn),icum(4,nmm:mn)  ! automatic arrays
        real    ainp(7),binp(2)
        integer iinp(6)
-       character*128 line
+       character*128 line,line1
        character*10 word
        logical crop,search,dotr,found
 
@@ -623,19 +672,37 @@
             endif
 
       crop=.false.
+      domap=.false.
+      skipto=.false.
       call getarg(2,word)   ! arg
       if(word.eq.'crop') crop=.true.
+      if(word.eq.'map') domap=.true.
+      if(word.eq.'skipto') skipto=.true.
+      if(domap) then
+        mprbay=0
+        naqs = 12
+        anum = 8.0
+        ity = 10
+      endif
+      if(skipto) then
+        naqs = 12
+        anum = 8.0
+        ity = 10
+      endif
+
+! insert to read input values associated with image file, first comment line
 
         read(15,*) ptype
         if(mprtra.gt.0) write(6,'(/2a)')   'image_ptype ',ptype
         read(15,'(a)') line
-
+        line1 = '#'
 
         k=1
         do while(line(1:1).eq.'#')
          if(k.eq.1) write(6,'(2a)')'image file: ',filen(1:lenf)
      I  ,' comments:'
          write(6,'(a)') line
+         if(k.eq.1) line1=line
          if(.not.crop) then
           if(k.eq.1) then
             l1=0
@@ -689,8 +756,10 @@
         if(imdn.gt.16383) monochrom=1
         iblack=0
 
-        if(mprtra.gt.0) write(6,'(a,2i5,i6,i15)')'ck_iw ih im',iw,ih,imdn !, iw*ih/4
+        if(mprtra.gt.0) write(6,'(a,2i6,i8)')'ck_iw_ih_im',iw,ih,imdn
         if(mprtra.gt.0) write(6,'(a,2i5,i6,i15)')
+
+! end insert for image file input parameters
 
 !                 patch to crop out a custom pix file
       if(crop) then
@@ -718,8 +787,13 @@
         iw3=iw2-iw1+1
         ih3=ih2-ih1+1
 
-        write(6,'(/2a,2(i7,i5))')
-     I  'bayes_mtf ',filen(1:lenf),iw1,iw2,ih1,ih2
+        iblack=0
+        call getarg(7,word)  
+        read(word,*,iostat=ierr) iblack
+        if(ierr.ne.0) iblack=0
+
+        write(6,'(/3a,3(i7,i5))')
+     I  'bayes_mtf ',filen(1:lenf),'  crop',iw1,iw2,ih1,ih2,iblack
 
         if( iw1.le.0 .or. iw3.lt.32 .or. ih3.lt.32 ) then
           write(6,'(/a,2(i8,i6))')'Error with crop definition'
@@ -732,8 +806,6 @@
         if(istat.ne.0) write(6,*)'Error alloc ipix',istat,iw,ih
         read(15,*) ipix
         close(15)
-!       call timeb(1,'read input-pix.ppm')
-!       call walltime(wtime0,'read-pix ',9)
 
         i1=0
         do i=ih1,ih2
@@ -741,21 +813,22 @@
           j1=0
           do j=iw1,iw2
             j1=j1+1
-            jpix(j1,i1) = ipix(j,i)
-            jpix(j1,i1) = ipix(j,i)
+            jpix(j1,i1) = ipix(j,i)-iblack
+            jpix(j1,i1) = ipix(j,i)-iblack
           enddo
         enddo
 
-        open(16,file='pix_crop.pgm')
+        open(26,file='pix_crop.pgm')
 
-        write(16,'(a)')ptype
-        write(16,'(2i5,i8,3i5)') iw3,ih3  !,iw1,iw2,ih1,ih2
-        write(16,'(i5)') imdn
-        write(16,'(15i6)') jpix
+        write(26,'(a)')ptype
+        write(26,'(a)')line1
+        write(26,'(2i5,i8,3i5)') iw3,ih3  !,iw1,iw2,ih1,ih2
+        write(26,'(i5)') imdn
+        write(26,'(15i6)') jpix
         if(iw3.gt.32 .or. ih3.gt.32) then
           write(6,'(/a,2i5)')
      I    'Cutout file pixc0.pgm prepared successfully: iw,ih:',iw3,ih3
-
+        close(26)
 !       else
 !         write(6,'(/a,2i5,a)')'Cutout failed, iw,ih:'
 !    I    ,iw3,ih3,' are way too small to use!'
@@ -781,11 +854,12 @@
       use image_data
       use esf_data
 
+       parameter( kptrmx=2500)
        dimension ihisto(4,nmm:mn),icum(4,nmm:mn)  ! automatic arrays
        integer iqub(4,4),iqt(4)
        real rms(2,4),dis(4),rnb(9)
        dimension ncnt(2,4)
-       integer, allocatable :: itrpz(:,:,:)
+       integer, allocatable :: itrpz(:,:,:),jtrpz(:,:,:)
        character*128 line
        logical belo,search,dotr,found
 
@@ -802,8 +876,6 @@
          ib4=4
 !        xfmt='rggb'
 !       endif
-
-!     gain = 1/cgain
 
        ipixmin=99999
        ipixmax=0
@@ -823,7 +895,6 @@
           jj=mod(j+1,2)
           kk=2*ii+jj+1
           ihisto(kk,iraw) = ihisto(kk,iraw)+1
-!         rms2 = iraw*gain !  sqrt((raw*gain)**2+ rn**2)
         enddo
       enddo
 
@@ -838,7 +909,7 @@
 !       write(16,'(9i10)')(ihisto(i,j),i=1,4),j,(icum(i,j),i=1,4)
 !     enddo
 
-      if(mprtra.gt.1)
+      if(mprtra.gt.0 .or. skipto)
      I write(6,'(/a,2i12)')
      I'lowest highest Octile + Quartile DN values RGGB',ipixmin,ipixmax
       iq0 = ih*iw/4
@@ -854,30 +925,38 @@
          if(belo) iqub(ii,i)=j+1  ! mod 240110bd
        enddo
       enddo
-      if(mprtra.gt.1) 
+      if(mprtra.gt.0 .or. skipto) 
      Iwrite(6,'(a,5i10)')'iqub',(iqub(ii,i),ii=1,4),iqt(i)
       enddo
 
-      istr = 0.25*(iqub(2,2)+iqub(3,2) +iqub(2,3)+iqub(3,3))
-!     istr = 1.5*( iqub(2,1) +iqub(3,1) )
-!     istr = 0.05*(iqub(2,3)+iqub(3,3)) +1.0*(iqub(2,1)+iqub(3,1))
+!     istr =   0.25*(  iqub(2,1)  +iqub(3,1) +iqub(2,3)+iqub(3,3))
+!     istr =  0.125*(3*iqub(2,1)+3*iqub(3,1) +iqub(2,3)+iqub(3,3))
+!     istr =    0.1*(4*iqub(2,1)+4*iqub(3,1) +iqub(2,3)+iqub(3,3))
+      istr = 0.0625*(7*iqub(2,1)+7*iqub(3,1) +iqub(2,3)+iqub(3,3))
+!     istr =   0.05*(9*iqub(2,1)+9*iqub(3,1) +iqub(2,3)+iqub(3,3))
       
-      if(mprtra.gt.1) 
-     Iwrite(6,'(a,5x,9i10)')'global strike for trapezoids',istr
+      if(mprtra.gt.0 .or. skipto) 
+     Iwrite(6,'(a,9i10)')'global strike for trapezoids',istr
       ntrp = 0
 
-      allocate( itrpz(2,8,900), stat=istat)
+      allocate( itrpz(2,10,kptrmx), stat=istat)
 
-      do ktrp=1,900 ! 1550
+      do ktrp=1,kptrmx 
+       do k1=1,2
+        do k2=1,8
+         itrpz(k1,k2,ktrp)=0
+        enddo
+       enddo 
          itrpz(2,1,ktrp) = ih+1
          itrpz(1,2,ktrp) = iw+1
-         itrpz(2,3,ktrp) = 0
-         itrpz(1,4,ktrp) = 0
+         itrpz(2,5,ktrp) = ih+1
+         itrpz(1,6,ktrp) = iw+1
       enddo
 
       jth=8
       ith=4
       ktrpm=0
+      ktrp=1
       do i=1,ih
         jl=0
         jr=0
@@ -887,20 +966,20 @@
           jj=mod(j+1,2)
           kk=2*ii+jj+1
           dotr=.false.
-      if(kk.eq.2 .or. kk.eq.3 .and. iraw.gt.0 ) then
+      if(kk.eq.2 .or. kk.eq.3 .and. iraw.gt.0) then
         if( iraw.lt.istr) then                        ! black spot found
           if(jl.eq.0) jl = j
           jr = j
 !         if(j.eq.iw) dotr=.true.
           if(j.ge.iw-1) dotr=.true.
-!     if(i.gt.1 .and. i.le.3) 
-!    I  write(6,'(a,5i5,2x,2L2,4(i8,i5),14f10.0)')'ck_R',ktrp,jl,jr,j,i,
-!    I    found,dotr, ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4)
+!     if(i.gt.1 .and. i.le.153 .and. mprtra.gt.7) 
+!    I  write(6,'(a,5i5,i6,2x,2L2,2(4(i8,i5),2x))')'ck_B',ktrp,jl,jr, ! Black
+!    I    j,i,iraw,found,dotr, ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
         else
           if(jr.gt.0) dotr=.true.  ! white after trapez
-!     if(i.gt.1 .and. i.le.3) 
-!    I  write(6,'(a,5i5,2x,2L2,4(i8,i5),14f10.0)')'ck_S',ktrp,jl,jr,j,i,
-!    I    found,dotr, ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4)
+!     if(i.gt.1 .and. i.le.153 .and. mprtra.gt.7) 
+!    I  write(6,'(a,5i5,i6,2x,2L2,2(4(i8,i5),2x))')'ck_W',ktrp,jl,jr, ! White
+!    I    j,i,iraw,found,dotr, ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
         endif
         if(dotr) then
           found=.false.
@@ -911,7 +990,7 @@
             if(ktrp.gt.ktrpm) then
               search=.false.
               ktrpm = ktrp
-              if(ktrp.gt.1550) stop 'ktrp excceded'
+              if(ktrp.gt.kptrmx) stop 'ktrp exceeded'
 !             if(ktrp.gt.73) goto 73
             endif
 !           if(jr.ge.itrpz(1,2,ktrp)-1 .and. jl.le.itrpz(1,4,ktrp)) then  
@@ -927,38 +1006,60 @@
                itrpz(1,2,ktrp) = jl
                itrpz(2,2,ktrp) = i
             endif 
-            if(jr.gt.itrpz(1,4,ktrp) ) then
-               itrpz(1,5,ktrp) = jr         ! backup for when 1 is right, but not as high as 2
-               itrpz(2,5,ktrp) = i
-            endif
+            if(jl.le.itrpz(1,6,ktrp) ) then
+               itrpz(1,6,ktrp) = jl
+               itrpz(2,6,ktrp) = i
+            endif 
+!           if(jr.gt.itrpz(1,4,ktrp) ) then
+!              itrpz(1,5,ktrp) = jr         ! backup for when 1 is right, but not as high as 2
+!              itrpz(2,5,ktrp) = i
+!           endif
             if(jr.ge.itrpz(1,4,ktrp) ) then
                itrpz(1,4,ktrp) = jr         
                itrpz(2,4,ktrp) = i
             endif
-            if(jr.gt.jl ) then
-               itrpz(1,8,ktrp) = jr         ! backup for 4, when not most right
+            if(jr.gt.itrpz(1,8,ktrp) ) then
+               itrpz(1,8,ktrp) = jr         
                itrpz(2,8,ktrp) = i
             endif
-            if(jl.le.itrpz(1,3,ktrp) ) then
-              itrpz(1,7,ktrp) = jl          ! backup for 3 when left, but not lowest
-              itrpz(2,7,ktrp) = i
-            endif
+!           if(jr.gt.jl ) then
+!              itrpz(1,8,ktrp) = jr         ! backup for 4, when not most right
+!              itrpz(2,8,ktrp) = i
+!           endif
+!           if(jl.le.itrpz(1,3,ktrp) ) then
+!             itrpz(1,7,ktrp) = jl          ! backup for 3 when left, but not lowest
+!             itrpz(2,7,ktrp) = i
+!           endif
             itrpz(1,3,ktrp) = jl
             itrpz(2,3,ktrp) = i
+            itrpz(1,7,ktrp) = jr
+            itrpz(2,7,ktrp) = i
+            itrpz(1,9,ktrp) = itrpz(1,9,ktrp) + (jl+jr)*(1+jr-jl) ! cgx
+            itrpz(2,9,ktrp) = itrpz(2,9,ktrp) + i*(1+jr-jl)       ! cgy
+            itrpz(1,10,ktrp) = itrpz(1,10,ktrp) + (1+jr-jl)       ! w,n
          else  ! .not.found  -> a new trapez
             itrpz(1,1,ktrp) = jr
             itrpz(2,1,ktrp) = i
+            itrpz(1,5,ktrp) = jl
+            itrpz(2,5,ktrp) = i
                itrpz(1,2,ktrp) = jl
                itrpz(2,2,ktrp) = i
                itrpz(1,6,ktrp) = jl         ! backup for alt 2, when  not most left
                itrpz(2,6,ktrp) = i
             itrpz(2,3,ktrp) = i
             itrpz(1,3,ktrp) = jl
+            itrpz(2,7,ktrp) = i
+            itrpz(1,7,ktrp) = jr
                itrpz(1,4,ktrp) = jr
                itrpz(2,4,ktrp) = i
+               itrpz(1,8,ktrp) = jr
+               itrpz(2,8,ktrp) = i
+            itrpz(1,9,ktrp) = itrpz(1,9,ktrp) + (jl+jr)*(1+jr-jl) ! cgx
+            itrpz(2,9,ktrp) = itrpz(2,9,ktrp) + i*(1+jr-jl)       ! cgy
+            itrpz(1,10,ktrp) = itrpz(1,10,ktrp) + (1+jr-jl)       ! w,n
          endif
       if(mprtra.gt.5) 
-     I  write(6,'(a,5i5,2x,2L2,2(4(i8,i5),4x))')'ck_r',ktrp,jl,jr,j,i,
+     I  write(6,'(a,5i5,8x,2L2,2(4(i8,i5),2x))')'ck_F',ktrp,jl,jr,j,i,
      I    found,dotr, ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
             jl = 0
             jr = 0
@@ -968,14 +1069,11 @@
       enddo
   73  continue
 !     itrpe
-      if(mprtra.gt.4) write(6,'(a,i5)')'ck_k',ktrpm
+      if(mprtra.gt.0) write(6,'(a,i5)')'ck_number_of_trapezoids',ktrpm
+      call flush(6)
 
       do ktrp=1,ktrpm  ! new checkup/fix method 250727bd, check for bad cases with backup option
         found=.false.
-
-      if(mprtra.gt.3)
-     I  write(6,'(a,i5,9x,2(4(i8,i5),4x))')'ck_r0',ktrp,
-     I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
       
         if(itrpz(1,1,ktrp) .le. itrpz(1,2,ktrp)+itrpe 
      I .and. itrpz(2,1,ktrp) .eq. itrpz(2,2,ktrp) ) then
@@ -997,14 +1095,101 @@
           found=.true.
           icase=4
         endif
-        if(found) then  ! mprtra.gt.4) 
-        write(6,'(a,i5,9x,2(4(i8,i5),4x))')'ck_r1',ktrp,
-     I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
+        i11 = itrpz(1,2,ktrp)-itrpz(1,1,ktrp)
+        i12 = itrpz(1,3,ktrp)-itrpz(1,2,ktrp)
+        i13 = itrpz(1,4,ktrp)-itrpz(1,3,ktrp)
+        i14 = itrpz(1,1,ktrp)-itrpz(1,4,ktrp)
+        i21 = itrpz(2,2,ktrp)-itrpz(2,1,ktrp)
+        i22 = itrpz(2,3,ktrp)-itrpz(2,2,ktrp)
+        i23 = itrpz(2,4,ktrp)-itrpz(2,3,ktrp)
+        i24 = itrpz(2,1,ktrp)-itrpz(2,4,ktrp)
+        i123 = i11*i22 -i21*i12
+        i341 = i13*i24 -i23*i14
+        i15 = itrpz(1,6,ktrp)-itrpz(1,5,ktrp)
+        i16 = itrpz(1,7,ktrp)-itrpz(1,6,ktrp)
+        i17 = itrpz(1,8,ktrp)-itrpz(1,7,ktrp)
+        i18 = itrpz(1,5,ktrp)-itrpz(1,8,ktrp)
+        i25 = itrpz(2,6,ktrp)-itrpz(2,5,ktrp)
+        i26 = itrpz(2,7,ktrp)-itrpz(2,6,ktrp)
+        i27 = itrpz(2,8,ktrp)-itrpz(2,7,ktrp)
+        i28 = itrpz(2,5,ktrp)-itrpz(2,8,ktrp)
+        i567 = i15*i26 -i25*i16
+        i785 = i17*i28 -i27*i18
+!     if(skipto .and. ktrp.eq.ktrps) 
+!    I  write(6,'(a,i5,4i10,i2,5x,2(4(i8,i5),4x))')'ck_rc',ktrp,
+!    I  i123,i567,i341,i785
+        icross = i123-i567 +i341-i785
+      itrpz(1,9,ktrp) = itrpz(1,9,ktrp)/(itrpz(1,10,ktrp)*2)  ! 2 is a Bayer factor
+      itrpz(2,9,ktrp) = itrpz(2,9,ktrp)/itrpz(1,10,ktrp)
+      itrpz(2,10,ktrp) = (i123+i341)*1000./itrpz(1,10,ktrp)   ! expected quotient -2*1000
+!     if(mprtra.gt.3 .or. (skipto .and. ktrp.eq.ktrps))
+      if(mprtra.gt.3)
+     I  write(6,'(a,i5,L2,i2,5x,3(4(i8,i5),4x))')'ck_r0',ktrp
+     I ,found,icase,((itrpz(k1,k2,ktrp),k1=1,2),k2=1,10)
+
+        if(found) then !  mprtra.gt.4) 
+!       if(mprtra.gt.0)
+!    I  write(6,'(a,i5,9x,2(4(i8,i5),4x))')'ck_r1',ktrp,
+!    I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
           itrpz(1,icase,ktrp) = itrpz(1,icase+4,ktrp)
           itrpz(2,icase,ktrp) = itrpz(2,icase+4,ktrp)
-        write(6,'(a,2i5,4x,4(i8,i5))')'ck_R1',ktrp,icase,
+        if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+     !  write(6,'(a,2i5,4x,4(i8,i5))')'ck_R1',ktrp,icase,
      I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4)
         endif
+
+        if(icross.gt.0) then
+          itrpz(2,10,ktrp) = (i567+i785)*1000./itrpz(1,10,ktrp)    
+          if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+     I    write(6,'(a,i5,i9,3(4(i8,i5),4x))')'ck_RC',ktrp,icross,
+     I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,10)
+          do k2=1,4
+            do k1=1,2
+              itrpz(k1,k2,ktrp) = itrpz(k1,k2+4,ktrp)
+            enddo
+          enddo
+        endif
+
+        j = 3*np/2 
+        if(abs(itrpz(2,10,ktrp)) .lt. 1850    ! relative area spanned by corners is too small
+     I   .and. itrpz(1,10,ktrp) .gt. 2500     ! and area is greater than min allowed size
+     I   .and. itrpz(1,9,ktrp) .gt.j .and. itrpz(1,9,ktrp) .lt. iw-j
+     I   .and. itrpz(2,9,ktrp) .gt.j .and. itrpz(2,9,ktrp) .lt. ih-j
+     I  ) then
+          aside = sqrt( float(itrpz(1,10,ktrp)) )
+          jv = itrpz(1,9,ktrp) + 0.5*aside
+          iv = itrpz(2,9,ktrp) - 0.5*aside
+          if( mod( jv+iv, 2) .eq. 0 ) iv=iv-1
+          itrpz(1,1,ktrp) = jv
+          itrpz(2,1,ktrp) = iv
+          jv = itrpz(1,9,ktrp) - 0.5*aside
+          if( mod( jv+iv, 2) .eq. 0 ) iv=iv+1
+          itrpz(1,2,ktrp) = jv
+          itrpz(2,2,ktrp) = iv
+          iv = itrpz(2,9,ktrp) + 0.5*aside
+          if( mod( jv+iv, 2) .eq. 0 ) iv=iv+1
+          itrpz(1,3,ktrp) = jv
+          itrpz(2,3,ktrp) = iv
+          jv = itrpz(1,9,ktrp) + 0.5*aside
+          if( mod( jv+iv, 2) .eq. 0 ) iv=iv-1
+          itrpz(1,4,ktrp) = jv
+          itrpz(2,4,ktrp) = iv
+        i11 = itrpz(1,2,ktrp)-itrpz(1,1,ktrp)
+        i12 = itrpz(1,3,ktrp)-itrpz(1,2,ktrp)
+        i13 = itrpz(1,4,ktrp)-itrpz(1,3,ktrp)
+        i14 = itrpz(1,1,ktrp)-itrpz(1,4,ktrp)
+        i21 = itrpz(2,2,ktrp)-itrpz(2,1,ktrp)
+        i22 = itrpz(2,3,ktrp)-itrpz(2,2,ktrp)
+        i23 = itrpz(2,4,ktrp)-itrpz(2,3,ktrp)
+        i24 = itrpz(2,1,ktrp)-itrpz(2,4,ktrp)
+        i123 = i11*i22 -i21*i12
+        i341 = i13*i24 -i23*i14
+        itrpz(2,10,ktrp) = (i123+i341)*1000./itrpz(1,10,ktrp)   ! expected quotient -2*1000
+      if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+     I  write(6,'(a,i5,i4,5x,3(4(i8,i5),4x))')'ck_RR',ktrp
+     I ,nint(aside),((itrpz(k1,k2,ktrp),k1=1,2),k2=1,10)
+        endif
+
       enddo
 
 ! check now edge length, suppress misformed trapezoids with small edge length
@@ -1024,13 +1209,14 @@
             dis(i) = sqrt( float(
      I        (itrpz(1,j,ktrp) - itrpz(1,i,ktrp))**2 +
      I        (itrpz(2,j,ktrp) - itrpz(2,i,ktrp))**2 ))
-            dis4 = min(dis(1),dis(2),dis(3),dis(4))
           enddo
+            dis4 = min(dis(1),dis(2),dis(3),dis(4))
         if(    itrpz(2,1,ktrp).gt.L0 .and. itrpz(1,2,ktrp).gt.L0
      I   .and. itrpz(2,3,ktrp).lt.L2 .and. itrpz(1,4,ktrp).lt.L1
-     I   .and.  dis4.gt.1 .or. ktrpm.eq.1) then
+     I   .and.  dis4.gt.ithsq .or. ktrpm.eq.1) then
+!    I   .and.  dis4.gt.1 .or. ktrpm.eq.1) then
           kk=kk+1
-          do k2=1,4
+          do k2=1,10 ! 4   ! 260705 bd all info is moved to kk
            do k1=1,2
             itrpz(k1,k2,kk) = itrpz(k1,k2,ktrp)         ! kept and moved to kk 
            enddo
@@ -1043,104 +1229,22 @@
      I                itrpz(1,3,kk)-itrpz(1,2,kk), 
      I                itrpz(1,4,kk)-itrpz(1,1,kk), 
      I                itrpz(1,4,kk)-itrpz(1,3,kk)) 
-      if(mprtra.gt.4) 
-     I    write(6,'(a,2i5,4(i8,i5),4x,4f8.1,3i5)')'ck_T',ktrp,kk,
-     I    ((itrpz(k1,k2,kk),k1=1,2),k2=1,4),dis,minh,minv,ithsq
-!    I    write(6,'(a,2i5,4(i8,i5),4x,4f8.1,3i5)')'ck_T',ktrp,kk,
-!    I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4),dis,minh,minv,ithsq
+      if(mprtra.gt.1) 
+     I    write(6,'(a,2i5,6(i8,i5),4x,5f8.1,3i5)')'ck_T',ktrp,kk,
+     I    ((itrpz(k1,k2,kk),k1=1,2),k2=1,4),
+     I    ((itrpz(k1,k2,kk),k1=1,2),k2=9,10),dis,dis4,minh,minv,ithsq
 
-         if(ktrpm.gt.1) then
-          if(minv.lt.ithsq .or. minh.lt.ithsq) then   ! revise for near horizontal square
-      ix=0.125*(itrpz(1,1,kk)+itrpz(1,2,kk)+itrpz(1,3,kk)+itrpz(1,4,kk))
-      iy=0.125*(itrpz(2,1,kk)+itrpz(2,2,kk)+itrpz(2,3,kk)+itrpz(2,4,kk))
-
-            ix = 2*ix+2   !  prelim CG of trpz with Bayer G
-            iy = 2*iy+1   ! rGgb           
-            ix1 = +1
-            iy1 = -1
-            ix2 = -1
-            iy2 = -1
-            do kt=1,4
-               dotr=.true.
-               id=2
-               jd=1
-               do while(dotr)
-                 found=.false.
-                 search=.true.
-!                jd = -id+1 
-                 do while(search)
-                   j = ix + ix1*id + ix2*jd  
-                   i = iy + iy1*id + iy2*jd
-                  if(j.lt.2 .or. j.gt.iw .or. i.lt.1 .or. i.gt.ih) then ! skip
-                    search=.false.
-                  else
-                   iraw = ipix(j  ,i  ) ! - iblack
-                   if(iraw.lt.istr) then
-                     found=.true.
-                     itrpz(1,kt,kk) = j
-                     itrpz(2,kt,kk) = i
-      if(mprtra.gt.7) then
-          write(6,'(a,5i5,4i3,4(i8,i5),4x,i9)')'ck_x',j,i,jd,id
-     I    ,kt,ix1,iy1,ix2,iy2,((itrpz(k1,k2,kk),k1=1,2),k2=1,4),iraw
-      endif
-                   endif
-                   if(found)then
-                     search=.false.
-                     jd = max( -id +1, jd - 4 )
-                   elseif( abs(jd) .ge. abs(id) ) then
-                     search=.false.
-                   else
-                     jd = jd + 1
-                   endif
-                  endif  ! skip if not in domain
-!                  jd = jd + 1
-                 enddo
-                 dotr = found
-                 id = id + 1
-               enddo
-               ix1 = ix2
-               iy1 = iy2
-               if(kt.eq.2 ) ix2=-ix2
-               if(kt.eq.1 .or. kt.eq.3) iy2=-iy2
-            enddo
-            do i=1,4
-             j=mod(i,4)+1
-             dis(i) = sqrt( float(
-     I        (itrpz(1,j,kk) - itrpz(1,i,kk))**2 +
-     I        (itrpz(2,j,kk) - itrpz(2,i,kk))**2 ))
-      if(mprtra.gt.5) then
-      write(6,'(a,f8.1,9i6)')'ck_y',dis(i),i,j,kk,
-     I itrpz(1,j,kk) - itrpz(1,i,kk),itrpz(1,j,kk),itrpz(1,i,kk),
-     I itrpz(2,j,kk) - itrpz(2,i,kk),itrpz(2,j,kk),itrpz(2,i,kk)
-      endif
-            enddo
-      if(mprtra.gt.4) 
-     I    write(6,'(a,2i5,4(i8,i5),4x,4f8.1,2i5)')'ck_U',ktrp,kk,
-     I    ((itrpz(k1,k2,kk),k1=1,2),k2=1,4),dis
-          endif  ! revise
-
-          dis4 = min(dis(1),dis(2),dis(3),dis(4))
-          min1 = min( min1, itrpz(2,1,ktrp), itrpz(1,2,ktrp) )
-          min2 = min( min2, L2-itrpz(2,3,ktrp), L1-itrpz(1,4,ktrp) )
-          dmin = min( dmin, dis4 )
-          if(dis4.lt.ithsq) then ! reject finally
-           if(mprtra.gt.4) 
-     I     write(6,'(a,2i5,4(i8,i5),4x,4f8.1,2i5)')'ck_V',ktrp,kk,
-     I    ((itrpz(k1,k2,kk),k1=1,2),k2=1,4),dis
-            kk=kk-1
-          endif
-         endif ! ktrpm.gt.1
         else
-      if(mprtra.gt.4) 
-     I    write(6,'(a,i5,5x,4(i8,i5),4x,5f8.1)')'ck_R',ktrp,
-     I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4),dis,dis4
+         if(mprtra.gt.3) 
+     I    write(6,'(a,i5,5x,6(i8,i5),4x,5f8.1)')'ck_R',ktrp,
+     I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4),
+     I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=9,10),dis,dis4
         endif
        enddo
        ktrpm=kk
-!     else
-!     endif
 
-      allocate( edge(5,4,ktrpm), stat=istat)
+!     allocate( edge(5,4,ktrpm), stat=istat)
+      allocate( edge(8,4,ktrpm), stat=istat)
       if(istat.ne.0) then
          write(6,*)'Error alloc edge',istat
          stop 'alloc'
@@ -1176,6 +1280,8 @@
           edge(5,k2,kk) = psi0*pi2deg
           cgx=cgx+emx
           cgy=cgy+emy
+          edge(6,k2,kk) = itrpz(1,k2,kk)
+          edge(7,k2,kk) = itrpz(2,k2,kk)
         enddo
         igx=(cgx+2)/4
         igy=(cgy+2)/4
@@ -1474,7 +1580,7 @@
        ih1 = max( 1, nint(vm(2)) -jroip )
        ih2 = min(ih, nint(vm(2)) +jroip )
 
-      if(mprtra.gt.2) then
+      if(mprtra.gt.4) then
       write(6,'(a,2i4,4i5,3f9.1,9f9.5)')'ck_a',ktrp,kedg,
      I iw1,iw2,ih1,ih2, vm, edge(4,kedg,ktrp), phi, ve, vn
       endif
@@ -1884,14 +1990,15 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       use esf_data
       use fit_data
       use plot_data_compare , only : apixm
-      character*40 fmt
+      character*51 fmt
         damp = 1.0  ! mixing parameters, 1: Newton no damping 
         damp1= 1.0  
         damp2= 1.0 
         scalan = 0.1        ! 0.159  rev 250804bd for rev balance phi awr(3)
         scale1 = 1.         ! option rev balance for fil(1)  awr(1)
         scalen = 0.003      ! option rev balance for fil(4) normal gradient
-      write(fmt,'(a)') '(/a,i4,i5,i7,2f10.2, 5f10.5,a,f10.3)'
+      write(fmt,'(a)') 
+     I '(/a,i4,i5,i7,2f10.2, 5f10.5,a,f10.3,a,2f9.3,a,f6.3)'
       onlyi = .false.
       uimag = .false.
 
@@ -1927,9 +2034,11 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       call init_y00
       call init_yrfm
      
+      if(mprbay.gt.0) then
       write(6,'(/3a)') 'Stage 1    M     N   singular      z',
      I  '           y        conv       mx_coef_corr  phi_deg'
      I ,'    dark  j-bright'
+      endif
 
 
       ihys=5
@@ -1937,8 +2046,6 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       ihys=0
         keep_roi=.false.
         nnull=0
-!       if(mprplo.gt.4) call mkploto
-!     call timeb(-1,'other')
 !     call walltime(wtime0,'other',2)
 
        if(mprbay.gt.2) then
@@ -1952,14 +2059,9 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
 
       call postprob( yfun )
 
-!     call timeb(-2,'postprob')
-!     call walltime(wtime0,'postprob',3)
-!       if(mprplo.gt.4) call mkplote
 
         call svdfitb(udes,brh,ndat,npar,nwh,nparm,sngv,awr,vrk,cvm,
      I  wdes,rv1,zfun,yfun,qgam,conv,jtn)
-!     call timeb(-3,'other')
-!     call walltime(wtime0,'svd',4)
 
       if(skip1) then
         write(6,'(a)')'Skipping Stage1'
@@ -1980,8 +2082,6 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
         call update1( damp, damp1, damp2 )
 !     phi = phim/pi2deg
         call getesfd
-!     call timeb(-1,'other')
-!     call walltime(wtime0,'other',2)
 
         if(mprbay.gt.2 .and. .not.keep_roi) then
           write(6,'(a)')'Resetting ROI'
@@ -1997,13 +2097,8 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
 
         call postprob( yfun )
 
-!     call timeb(-2,'postprob')
-!     call walltime(wtime0,'postprob',3)
-
         call svdfitb(udes,brh,ndat,npar,nwh,nparm,sngv,awr,vrk,cvm,
      I  wdes,rv1,zfun,yfun,qgam,conv,jtn)
-!     call timeb(-3,'other')
-!     call walltime(wtime0,'svd',4)
 
         convr=conv
         if(jtn.eq.20) conv=0
@@ -2021,8 +2116,11 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
         ihys=0
 
         call mkwipe
+      
+      if(mprbay.gt.0) then
       write(6,'(a)')'Stage 2'
       call flush(6)
+      endif
 
 ! fil(1) fil(2) phi-3 xno-npx=4 gno-nph=5 grad-npg=6 curv-npc=7....
 !     uxno=.true.    ! remains
@@ -2037,9 +2135,8 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
          if(nes.ge.2) ugrad=.true.
          npg = 6       
          if(nes.ge.3) ucurv=.true.
-         npoly = nes-1
+         npoly = nes-1 ! for curv use nes=3 and higher
          npc = 7
-!        npar1 = 5 + npoly
          npar1 = 4 + nes
          npar2 = npar1
        if(uqspl) then
@@ -2055,7 +2152,7 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
          npk = npar1+1       ! value to be overwritten
 
       do itn=-2,ity ! 2 5 
-
+        if(itn.gt.3 .and. conv.lt.0.001) goto 222
         call update1( damp, damp1, damp2 ) ! used for npar1  1...4
         if(uqspl) then
           call update3
@@ -2071,18 +2168,20 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
         call getesfd
 
         if(itn .eq. 3 ) then
+      if(mprbay.gt.0) then
       write(6,'(a)')'Stage 3'
+      endif
 ! fil(1) fil(2) phi-3           gno-nph=5 grad-npg=6 curv-npc=7....
 !         udark=.false.
           uxno=.false.             
 !     write(6,'(a)')'ck_Warning uxno kept true'
-          ugnor=.false.      ! should it remain
-          nph = 4
+          ugnor=.false. ! should it remain, no
+          nph = 4     
 !         ugrad=      ! remains 
           npg = 4       
 !         ucurv=      ! remains
           npc = 5
-          npar1 = 3 + nes
+          npar1 = 2 + max(1,nes)
           npar2 = npar1
           uimag = .true.
          if(uqspl) then
@@ -2091,9 +2190,6 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
           npar = npar1 + ncd*2
          endif
         endif
-
-!     call timeb(-1,'other')
-!     call walltime(wtime0,'other',2)
 
        if(mprbay.gt.2) then
         write(6,fmt)'Coef',itn,npar
@@ -2115,17 +2211,12 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
      I   write(6,'(20f10.5)') (yi(i),i=1,ncd)
        endif
 
-        if(mprplo.gt.4. and. itn.eq.ity) call mkploto
+!       if(mprplo.gt.4. and. itn.eq.ity) call mkploto
         call postprob( yfun )
-        if(mprplo.gt.4. and. itn.eq.ity) call mkplote
-
-!     call timeb(-2,'postprob')
-!     call walltime(wtime0,'postprob',3)
+!       if(mprplo.gt.4. and. itn.eq.ity) call mkplote
 
         call svdfitb(udes,brh,ndat,npar,nwh,nparm,sngv,awr,vrk,cvm,
      I  wdes,rv1,zfun,yfun,qgam,conv,itn)
-!     call timeb(-3,'other')
-!     call walltime(wtime0,'svd',4)
         if(itn.eq.1) sumry(1)=zfun
         if(itn.eq.2) sumry(2)=zfun
         if(itn.eq.4) sumry(3)=zfun
@@ -2133,6 +2224,9 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
 
         ihys=0
        enddo ! itn
+
+ 222  continue 
+        if(mprplo.gt.4) call mkplotou
 
         if(uqspl) then
           call update3
@@ -2148,13 +2242,13 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
          call getesfd
         endif
 
+      if(mprbay.gt.0) then
       if(uqspl) then
         write(6,'(/a,2i4)')'inferred envelope model Y parameters:'
-     I ,nqm0,nqm !<<>>
+!    I ,nqm0,nqm !<<>>
       else
         write(6,'(/a)')'inferred full harmonic model y parameters:'
       endif
-      if(mprbay.gt.0) then
         rmsa = fil(1)*sqrt(cvm(1,1))
         rmsb = fil(2)*sqrt(cvm(2,2))
         if(uxno.and.uanum) then
@@ -2162,11 +2256,11 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
      I  (sqrt(cvm(i,i)),i=1,npar1)
 !    I  (rmsa,rmsb,sqrt(cvm(i,i)),i=3,npar1)
         elseif(uxno) then
-          write(6,'(a,2L3,9x,(4f10.5,10x,20f10.5))')'RMS b',uanum,uxno,
+          write(6,'(a,2L3,9x,(4f10.5,    20f10.5))')'RMS b',uanum,uxno,
      I  (sqrt(cvm(i,i)),i=1,npar1)
 !    I  (rmsa,rmsb,sqrt(cvm(i,i)),i=3,npar1)
         else
-          write(6,'(a,2L3,9x,(3f10.5,30x,20f10.5))')'RMS c',uanum,uxno,
+          write(6,'(a,2L3,9x,(3f10.5,20x,20f10.5))')'RMS c',uanum,uxno,
      I  (sqrt(cvm(i,i)),i=1,npar1)
 !    I  (rmsa,rmsb,sqrt(cvm(i,i)),i=3,npar1)
         endif
@@ -2181,10 +2275,26 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
          endif
         endif
       endif
+        i=1
+        do while( yr(i)**2+yi(i)**2 .gt.0.25 )
+          i=i+1
+        enddo
+        y2 = sqrt(yr(i)**2+yi(i)**2)
+        i=i-1
+        y1 = sqrt(yr(i)**2+yi(i)**2)
+        p = (0.5-y1)/(y2-y1)
+        xm50 = cpix(i) +p/np
+        i=np/4
+        xhn = sqrt( yr(i)**2 + yi(i)**2 )
+
+        write(fmt(21:22),'(i2)') 2 + max(2,nes)
         write(6,fmt)'COEF',itn-1,npar
-     I ,ndat,fil(1),fil(2),phi,pos0,anuf,fil(4),fil(3)
+!    I ,ndat,fil(1),fil(2),phi,pos0,anuf,fil(4),fil(3)
+     I ,ndat,fil(1),fil(2),phi,pos0, fil(4),fil(3)
      I ,(vlp(jp),jp=2,npoly) 
-     I ,'   phi_deg',phi*pi2deg
+     I ,'   phi_deg',phi*pi2deg,'   edge_pos',vm,'   MTFhNyq',xhn
+       
+      if(mprbay.gt.0) then
        if(uqspl) then
         if(unats) then
          write(6,'(20f10.5)') (yqr(i),i=2,nqm-1)
@@ -2203,6 +2313,7 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
        if(mprplo.gt.1) call mkploth
        call mkplotc
        if(ucurv) call mkplotz
+      endif
        if(nnull.gt.0) then
          write(6,'(/a,i5,a)')'Warning: ROI contains',nnull,
      I  ' pixel values <=0 , results are not trust worthy!'
@@ -2213,19 +2324,12 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
        if(conv.gt.0.03) then
         write(6,'(/a,f10.6,a)')'Warning: OTF not converged',conv,
      I  ', results are wrong!'
+        xm50=0
        elseif(conv.gt.0.001 ) then
         write(6,'(/a,f10.6,a)')'Warning: OTF not converged',conv,
      I  ' results are not trust worthy or wrong!'
-       else
-        i=1
-        do while( yr(i)**2+yi(i)**2 .gt.0.25 )
-          i=i+1
-        enddo
-        y2 = sqrt(yr(i)**2+yi(i)**2)
-        i=i-1
-        y1 = sqrt(yr(i)**2+yi(i)**2)
-        p = (0.5-y1)/(y2-y1)
-        xm = cpix(i) +p/np
+        xm50=0
+       elseif(mprbay.gt.0) then
         if(apixm.gt.0) then
          i=1
          do while( yrfm(i) .gt.0.5 )
@@ -2236,9 +2340,11 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
          y1 = yrfm(i)
          p = (0.5-y1)/(y2-y1)
          xmm = cpix(i) +p/np
-       write(6,'(/a,9(f6.3,a))')'MTF50=',xm,' c/p  MTF50ref=',xmm,' c/p'
+         write(6,'(/a,9(f6.3,a))')'MTFhNyq=',xhn,'   MTF50=',xm50,
+     I ' c/p  MTF50ref=',xmm,' c/p'
         else
-         write(6,'(/a,9(f6.3,a))')'MTF50=',xm,' c/p'
+         write(6,'(/a,9(f6.3,a))')'MTFhNyq=',xhn,'   MTF50=',xm50,
+     I ' c/p'
         endif
        endif
        call checkgap
@@ -2256,20 +2362,8 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       logical activ,record,chk1
       double precision yfuns
 
-!      if(mprbay.gt.5) then
-!       write(6,'(a,i5,2f10.2,18f10.5/(20f10.5))')'COEF ',npar,
-!    I  fil(1),fil(2),pos0,fil(3),fil(4),anuf,phi,ve(3) !,ve(1),ve(2),vn
-!      endif
-!       write(6,'(29x,2a7,a9,9a12)')'xpa','xno','esf','hypo',
-!    I 'raw','dev','post','yfun'
-!      endif
-
       yfuns = 0
       i=roip
-      diam = 160.*sqrt(2.0-monochrom)/(2*max(iroip,iroin))
-!     write(6,'(a,2i5,f10.5)')'ck_diam',iroip,iroin,diam
-      diamin = 0.25*diam*roip/32.
-      diamin = min( 0.85*diam, diamin)
       if(uqspl)then
         do i=1,npar
           do j=1,ij
@@ -2366,17 +2460,6 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       rms2 = max( 1.0, rms2 )
          
       postlog  = 0.5*( dev*dev/rms2 -1)
-!!            av = hypo*cgain
-!!            ar = raw*cgain
-!!    postlog = av-ar -ar*log(av/ar) +0.5*(log(tpi*ar)-log(tpi*av)-1)    ! c)
-!             avg0 = hypo*cgain
-!             rn = nint(raw*cgain)
-!         aps = -avg0 +rn*(log(avg0)-log(rn)+1)-0.5*log(tpi*rn)  ! Sterling approx for log(Poisson_electrons) 
-!         aps = aps /(cgain*cgain)   ! log(Poisson_probability_dn)
-!!        ps(dn)=exp(aps)
-!         postlog1= -aps -0.5
-!         write(6,'(a,i8,2f10.5,3f12.1)')'ck_p',ij,
-!    I  postlog+0.5, postlog1+0.5, dev, hypo, raw
               yfuns = yfuns + postlog
 
               rmsd = sqrt(rms2)
@@ -2464,25 +2547,21 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
      I ,kk,iedi ,xpa,xno,esfi,hypo,raw,dev,postlog,yfun
 !    I ,(udes(ij,jp),jp=ncd+1,ncd+5)
       endif
-      if(mprplo.gt.4) then   ! check raw intensity in relative coord of edge: reasonable edge guess?
-      if(dopos) then
-      dd = diam*sqrt(raw/(fil(1)+fil(2)))
-      if(brh(ij).gt.throutly) then
-        dd = max( dd, diamin*2)
-!       call symbrgb(1, xpa, xno, dd, 1.0, 0.2, 0.2)
-        call symbrgb(1, xno, -xpa, dd, 1.0, 0.2, 0.2)
-      elseif(brh(ij).lt.-throutly) then
-        dd = max( dd, diamin*2.5)
-!       call symbrgb(1, xpa, xno, dd, 0.0, 0.7, 1.0)
-        call symbrgb(1, xno, -xpa, dd, 0.0, 0.7, 1.0)
-      else
-        dd = max( dd, diamin)
-!       call symbrgb(1, xpa, xno, dd, 0.9, 0.9, 0.9)
-!       call symbrgb(1, xno, -xpa, dd, 0.9, 0.9, 0.9)
-        call symbrgb(1, xno, -xpa, dd, 1.0, 1.0, 1.0)
-      endif
-      endif  ! dopos
-      endif
+!     if(mprplo.gt.4) then   ! check raw intensity in relative coord of edge: reasonable edge guess?
+!     if(dopos) then
+!     dd = diam*sqrt(raw/(fil(1)+fil(2)))
+!     if(brh(ij).gt.throutly) then
+!       dd = max( dd, diamin*2)
+!       call symbrgb(1, xno, -xpa, dd, 1.0, 0.2, 0.2)
+!     elseif(brh(ij).lt.-throutly) then
+!       dd = max( dd, diamin*2.5)
+!       call symbrgb(1, xno, -xpa, dd, 0.0, 0.7, 1.0)
+!     else
+!       dd = max( dd, diamin)
+!       call symbrgb(1, xno, -xpa, dd, 1.0, 1.0, 1.0)
+!     endif
+!     endif  ! dopos
+!     endif
 
             if(keep_roi) ij=ij+1    ! prepare for next in this mode
             endif  ! ROI
@@ -2529,35 +2608,133 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
      I ,np,ns,nm
         return
       endif
-      nmax=min( 63, nm)
+!     nmax=min( 63, nm)
 !     if(np.eq.64) then
        sfmx=0
-       do i=1,nmax
-        sfr(i) = sqrt( yr(i)**2 + yi(i)**2 )
-        sfmx = max( sfmx, sfr(i))
+       do i=1,63
+        sfr(i) = min( 1., sqrt( yr(i)**2 + yi(i)**2 ) )
+!       sfmx = max( sfmx, sfr(i))
        enddo
 !     endif
-      if(sfmx.gt.2.01) then
-        do i=1,nmax
-          sfr(i) = 0
-        enddo
-      endif
-      write(36,'(i3,2f9.2,2f7.2,64f9.6)')
+!     if(sfmx.gt.2.01) then
+!       do i=1,nmax
+!         sfr(i) = 0
+!       enddo
+!     endif
+      write(36,'(i3,3f10.3,f7.2,64f7.4)')
      I  ktrp,vm,phis,edge(5,kedg,ktrp),sfr
       call flush(36)
       return
       end
 
-      subroutine mkplot0( ktrp, kedg )
-! Author: Bernard Delley 2024
+      subroutine mkplotm
+! Author: Bernard Delley 2026
+!  plot map of tetrahedrons with detection number and MTF @ Nyq/2 color codes
       use image_data
       use esf_data
       use plot_data
+      real  rgb(3)
+      character*5 word
+      character*9 wcoord(4)
+      xmin = 1
+      xmax = iw
+      ymin = -ih
+      ymax = -1
 
-      j1 = max(  1, nint(vm(1))-155 )
-      j2 = min( iw, nint(vm(1))+155 )
-      i1 = max(  1, nint(vm(2))-155 )
-      i2 = min( ih, nint(vm(2))+155 )
+       call autotic( xtick, nx, xfmt, xmax, xmin)
+       call autotic( ytick, ny, yfmt, ymax, ymin)
+      do i=1,ny
+        yval(i) = -ytick(i)
+      enddo
+      xfmt='i4'
+      yfmt='i4'
+      xle = (xmax-xmin)  
+      yle = (ymax-ymin)  
+      scy = 160./yle
+      xle = xle*scy
+      yle = yle*scy
+!     write(6,'(a,9f9.3)')'ck_scy',xle,yle,scy
+      if(xle.gt.240) then
+        scx = 240./xle
+        xle = xle*scx
+        yle = yle*scx
+!     write(6,'(a,9f9.3)')'ck_scx',xle,yle,scx
+      endif
+      dd = 0.35*yle/24.
+
+       call frameb(xmin,xmax, xle, nx, xtick, xtick, xfmt,
+     I             ymin,ymax, yle, ny, ytick, yval, yfmt,
+     I 1.5, 0.5, 'X','Y', 'g_map.eps')
+
+        da(1) = xmin
+        db(1) = ymin
+        da(2) = xmax
+        db(2) = db(1)
+        da(3) = da(2)
+        db(3) = ymax
+        da(4) = xmin
+        db(4) = ymax
+!     call areargb(4,da,db, 0.8,0.8 ,0.8)        ! background
+
+       write(98,'(a)')'TFnt'
+      sat=1
+      val=0.75
+      do ktrp=1,ktrpm
+        do k=1,4
+          da(k) = edge(6,k,ktrp)
+          db(k) = -edge(7,k,ktrp)
+          if(ih.lt.400) then
+            write(wcoord(k),'(ai3,a,i3,a)')
+     I     '(',nint(edge(7,k,ktrp)),'-',nint(edge(6,k,ktrp)),')'
+          endif 
+        enddo
+        call areargb(4,da,db, 0.5,0.5 ,0.5)      ! trapezoid
+        cgx=0
+        cgy=0
+        do k=1,4
+          if(ih.lt.400) then
+            write(98,'(a)')'1 0 0 sc'
+            dx=0
+            dy=0
+            call PSshow( da(k),db(k),dx,dy,wcoord(k))
+          endif
+         cgx = cgx +edge(1,k,ktrp)
+         cgy = cgy -edge(2,k,ktrp)
+         hue=280*edge(8,k,ktrp)
+         call hsl2rgb( rgb(1), rgb(2), rgb(3), hue, sat, val)        
+         call symbrgb(1, edge(1,k,ktrp), -edge(2,k,ktrp), dd,
+     I   rgb(1), rgb(2), rgb(3))
+!        write(6,'(a,i4,i2,7f8.1,2f8.3)')'ck_e',ktrp,k,da(k),db(k),
+!    I   edge(1,k,ktrp),edge(2,k,ktrp),cgx/k,cgy/k,hue,edge(8,k,ktrp)
+!    I   ,xmax
+        enddo
+         cgx=cgx*0.25
+         cgy=cgy*0.25
+         write(word,'(a,i3,a)')'(',ktrp,')'
+       write(98,'(a)')'0 0 0 sc'
+         dx=-6
+         dy=-1
+         call PSshow( cgx,cgy,dx,dy,word)
+      enddo
+       
+      call endfrm( nx, xtick, ny, ytick)
+
+      return
+      end
+
+      subroutine mkplot0( ktrp, kedg )
+! Author: Bernard Delley 2024
+! plot ROI in image
+      use image_data
+      use esf_data
+      use plot_data
+      use fit_data, only : domap
+
+      if(domap) return
+      j1 = max(  1, nint(vm(1))-255 )
+      j2 = min( iw, nint(vm(1))+255 )
+      i1 = max(  1, nint(vm(2))-255 )
+      i2 = min( ih, nint(vm(2))+255 )
       xmin = j1
       xmax = j2
       ymin = -i2
@@ -2569,11 +2746,25 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       enddo
       xfmt='i4'
       yfmt='i4'
-      xle = (xmax-xmin)  
-      yle = (ymax-ymin)  
-      gle = max(xle,yle)
-      xle = xle*150./gle
-      yle = yle*150./gle
+!     xle = (xmax-xmin)  
+!     yle = (ymax-ymin)  
+!     gle = max(xle,yle)
+!     xle = xle*150./gle
+!     yle = yle*150./gle
+
+      xle = (xmax-xmin)
+      yle = (ymax-ymin)
+      scy = 160./yle
+      xle = xle*scy
+      yle = yle*scy
+!     write(6,'(a,9f9.3)')'ck_scy',xle,yle,scy
+      if(xle.gt.240) then
+        scx = 240./xle
+        xle = xle*scx
+        yle = yle*scx
+!     write(6,'(a,9f9.3)')'ck_scx',xle,yle,scx
+      endif
+
 
        call frameb(xmin,xmax, xle, nx, xtick, xtick, xfmt,
      I             ymin,ymax, yle, ny, ytick, yval, yfmt,
@@ -2589,10 +2780,11 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
         db(4) = ymax
       call areargb(4,da,db, 0.3,0.3 ,0.3)          ! background
 
-      if( max(i2,j2) .gt. 192) then
+      if( max(i2,j2) .gt. 250) then
         ifac=7
-      elseif( max(i2,j2) .gt. 64) then
+      elseif( max(i2,j2) .gt. 100) then
         ifac=3
+        ifac=1
       else
         ifac=1
       endif
@@ -2601,8 +2793,6 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
           ii=mod(i+1,2)
           jj=mod(j+1,2)
           kk=2*ii+jj+1
-!         dxp = j-vm(1)
-!         dyp = i-vm(2)
           if(monochrom.eq.1) then ! full lattice
             raw = ipix(j  ,i  ) ! - iblack
             dd = 0.9*ifac*sqrt(raw/(fil(1)+fil(2)))*xle/(j2-j1)
@@ -2648,9 +2838,9 @@ c         write(6,'(a,i5,9f12.5)')'ck_d',i,yrfm(i),circi,papti
       return
       end
 
-
       subroutine mkplotf
 ! Author: Bernard Delley 2024
+! plot OTF real and imaginary part, +MTF
       use esf_data
       use plot_data
       use fit_data
@@ -2904,33 +3094,44 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
 
       dmax=0
       x0=drh(1)
-      do i=1,ndat
+      do i=2,ndat
         x1 = drh(i)    ! already ordered, positions
 !       if(x1.gt.-5 .and. x1.lt.+5) then
-          dmax = max(dmax, x1-x0)
+          if( x1-x0 .gt. dmax) then
+            dmax = x1-x0
+            xg=x1
+          endif
+!         dmax = max(dmax, x1-x0)
 !       endif
         x0=x1
       enddo
-!     write(6,'(/a,3f10.5)')'ck_fcutPix,fgapNy,gap',fcut*pix,.5/dmax,dmax
+
+      if(mprbay.gt.0 .or. 0.5/dmax .lt. fcut*pix) then
+       write(6,'(/a,f8.5,a,f6.1,5(a,f8.3))')
+     I 'Sampling gap',dmax,'p   at',xg,'   Safe_lim_freq',0.5/dmax,
+     I 'c/p   N_f lim_freq',fcut*pix,'c/p' !   angle',phi*pi2deg,' deg'
+      endif
 
       if(0.5/dmax .lt. fcut*pix) then
-
-       write(6,'(/a,f8.5,5(a,f8.3))')
-     I 'Sampling gap',dmax,'p   Safe_lim_freq',0.5/dmax,
-     I 'c/p   N_f lim_freq',fcut*pix,'c/p   angle',phi*pi2deg,' deg'
-
-       write(6,'(/a)')'WARNING: Safe_limit_frequency too low!'
-       write(6,'(2a)')'this slant angle is problematic',
-     I ' for the N_f value input, set from prior knowledge'
-       write(6,'(2a)')'inspect g_ESF_magnified.eps graphic'
-       if( anum*fcut*pix*dmax*2 .lt. 7 ) then
-        write(6,'(a,f7.2,a)')'by setting N_f to:',
-     I  anum*fcut*pix*dmax*2,
-     I' will truncate high frequencies and limit N_f lim_freq by Prior'
+       write(6,'(/2a)')'WARNING: Safe_limit_frequency too low!'
+     I ,'   This can be due to different causes:'
+       write(6,'(2a)')'- the slant angle is problematic, see ',
+     I'supplementary Table 1 and inspect g_ESF_magnified.eps graphic'
+       write(6,'(2a)')'- ROI extends beyond image limits, ',
+     I' inspect g_ROI_orientation.eps graphic'
+!     if(abs(xg).gt.8.) write(6,'(2a)')'  As the sampling gap is far',
+!    I' out, the Result may be OK if g_OTF_magnified.eps is OK'
+       write(6,'(a,f6.1)')'- ROI nquer too small ',2*roip
+!    I ' for the N_f value input, set from prior knowledge'
+!      write(6,'(2a)')'inspect g_ESF_magnified.eps graphic'
+!      if( anum*fcut*pix*dmax*2 .lt. 7 ) then
+!       write(6,'(a,f7.2,a)')'by setting N_f to:',
+!    I  anum*fcut*pix*dmax*2,
+!    I' will truncate high frequencies and limit N_f lim_freq by Prior'
 !      else
 !       write(6,'(2a)')'or measure with a slightly different angle',
 !    I' further away from problematic angle'
-       endif      
+!      endif      
 
       endif
         write(6,'(a)')
@@ -2940,6 +3141,7 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
 
       subroutine mkploth
 ! Author: Bernard Delley 2024, revs 2026 BD
+!  plot ESF (H* MAP)
       use esf_data
       use plot_data
       use fit_data
@@ -2994,32 +3196,29 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
      I 1.5, 0.3,'distance from edge [pixels]','data & hypothesis',
      I  gfile(1:len) )
 
+      jj=nint(0.0027*(ndat-npar+nsing))
+      if(iplo.eq.2) write(6,'(/a,i6,a,i4,a,i3,a,9x,a,i4,a)')
+     I 'N',ndat,'  M*',npar-nsing,' <',jj,
+     I ' >  position      sig   x_nor       raw*       hypo        xpa' 
+     I,'expected number of 3 sigma outliers <',jj,' >'
       jj=0
-      if(iplo.eq.2) write(6,'(/a,i6,a,i4,a,i3,a,9x,3a)')
-     I 'N',ndat,'  M*',npar-nsing,' <',nint(0.0027*(ndat-npar+nsing)),
-     I '>   position      sig   x_nor       raw*       hypo        xpa' 
-     I,'< expected number of 3 sigma outliers >'
       rsy = 0.4
       if(iplo.eq.3) rsy = 1.2
       rsyo = 1.5*rsy
+      jj=0
       do ii=1,ndat
         i=ke1(ii)       ! make it ordered in position from edge
         da(1) = xk1(i,1)
-        da(2) = xk1(i,1)
-!       if(rk2(2,i).gt.0) then
+!       da(2) = xk1(i,1)
         if( abs(brh(i)) .le. throutly) then  
-!       call linrgb(2, da, rk2(1,i), 0.6, 0.6, 0.6)      ! rms error bars
            da(2)=xk1(i,2)
         call symbrgb(1,da(1), da(2), rsy, 0.6, 0.6, 0.6)    ! values
         else  ! mark outliers
-!          rk2(2,i)=(-rk2(2,i)+rk2(1,i))*0.5
            da(2)=xk1(i,2)
-!       call linrgb(2, da, rk2(1,i), 0.9, 0. , 0. )      ! rms error bars outlier
         call symbrgb(1,da(1), da(2), rsyo, 0.9, 0., 0.)
           if(iplo.eq.2) then
            jj=jj+1
-          if(jj.le.20) then
-!          write(6,'(a,i10,i7,i6,f8.2,f8.2,9f11.2)')'ck_outlier',
+          if(jj.le.20 .or. jj.eq.jjj) then
            write(6,'(a,i7,i7,i6,f8.2,f8.2,9f11.2)')'outlier_pixel',
      I     jj,i,ii,brh(i),(xk1(i,j),j=1,4)
           endif
@@ -3028,12 +3227,12 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
           endif
         endif
       enddo
-!     if(jj.gt.20) then
-!          i=ijj
-!          ii=iijj
-!          write(6,'(a,i10,i7,i6,f8.2,f8.2,9f11.2)')'ck_outlier',
-!    I     jj,i,ii,brh(i),(xk1(i,j),j=1,4)
-!     endif
+      if(jj.gt.20) then
+           i=ijj
+           ii=iijj
+           write(6,'(a,i7,i7,i6,f8.2,f8.2,9f11.2)')'outlier_pixel',
+     I     jj,i,iijj,brh(i),(xk1(ijj,j),j=1,4)
+      endif
 
       da(1)=xmin+0.1
       da(2)=xmax-0.1
@@ -3070,7 +3269,6 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
         call linrgb(2, da, db(4), 0.0, 0.0, 0.0)      ! crh "0" reference 
         call linrgb(ndat,drh,crh, 0.0, 0.6, 0.0)
         call linrgb(ndat,drh,erh, 0.9, 0.0, 1.0)
-!       db(1)=db(1)+fil(iplo)
         db(3)=fil(1)+esf(nm)*fil(2)
       endif
         db(4)=db(3)
@@ -3079,13 +3277,12 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
 
 !     if(ihys.ge.5)
 !     if( iplo.ne.3 .and. iplo.ne.2 ) then
-      call linrgb(na, xk2(-nm,1), xk2(-nm,2), 0.0, 0.0, 1.0)  ! ihys=2                 suppressed g4-7
-!     call linrgb(na, xk2(-nm,1), xk2(-nm,5), 0.8, 0.0, 0.8)  ! plot yrfm, starting yr suppressed g4-7
+!     call linrgb(na, xk2(-nm,1), xk2(-nm,2), 0.0, 0.0, 1.0)  ! ihys=2     stage1 model
+!     call linrgb(na, xk2(-nm,1), xk2(-nm,5), 0.8, 0.0, 0.8)  ! plot yrfm, stage1 starting model
 !     endif
-      call linrgb(na, xk2(-nm,1), xk2(-nm,3), 0.0, 0.5, 0.0)  ! ihys=3
+      call linrgb(na, xk2(-nm,1), xk2(-nm,3), 0.0, 0.5, 0.0)  ! ihys=3     stage2 final model
       if(ihys.ge.4)
-     Icall linrgb(na, xk2(-nm,1), xk2(-nm,4), 0.9, 0.0, 0.0)
-!    Icall linrgb(ndat, udes, udes(1,4), 1.0, 0.0, 0.0)
+     Icall linrgb(na, xk2(-nm,1), xk2(-nm,4), 0.9, 0.0, 0.0)  !            stage3 final model
 
       if(iplo.eq.4) then ! add rms bar to the right
         da(1) = iroin+0.2 
@@ -3135,7 +3332,7 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
 
       subroutine mkplotc
 ! Author: Bernard Delley 2025
-!  plot csf
+!  plot csf     LSF
       use esf_data
       use plot_data
       use fit_data
@@ -3229,35 +3426,69 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
       return
       end
 
-      subroutine mkploto
-! finish and document outlier
+      subroutine mkplotou
+! image document outliers
 ! Author: Bernard Delley 2024
+      use image_data , only : monochrom 
       use esf_data
       use plot_data
+      use fit_data
 
+      if(domap) return
       dopos = .true.
+
+!     diam = 160.*sqrt(2.0-monochrom)/(2*max(iroip,iroin))
+!     write(6,'(a,2i5,f10.5)')'ck_diam',iroip,iroin,diam
+!     diamin = 0.25*diam*roip/32.
+!     diamin = min( 0.85*diam, diamin)
+!dd = 0.9*ifac*sqrt(raw/(fil(1)+fil(2)))*xle/(j2-j1)
+
       if(mprbay.gt.5) then
-      write(6,'(a,4f8.2)')'begin mkploto'
+      write(6,'(a,4f8.2)')'begin mkplotou'
       endif
       ymin = -iroip-1
       ymax =  iroip+1
       xmin = -iroin-2
       xmax =  iroin+2
       xl1 = max( xmax, ymax)
-      xlx = 180*xmax/xl1
-      xly = 180*ymax/xl1
+
+      xle = (xmax-xmin)
+      yle = (ymax-ymin)
+      scy = 160./yle
+      xle = xle*scy
+      yle = yle*scy
+!     write(6,'(a,9f9.3)')'ck_scy',xle,yle,scy
+      if(xle.gt.240) then
+        scx = 240./xle
+        xle = xle*scx
+        yle = yle*scx
+!     write(6,'(a,9f9.3)')'ck_scx',xle,yle,scx
+      endif
+      if(monochrom.eq.1) then
+        diam = 0.9*xle/(xmax-xmin)
+!       write(6,'(a,f9.3)')'ck_A',diam
+      else
+        diam = 1.2*xle/(xmax-xmin)
+!       write(6,'(a,f9.3)')'ck_a',diam
+      endif
+      diamin = 0.1 *diam*roip/32.
+      diamin = min( 0.80*diam, diamin)
 
 !     write(6,'(a,i5,4f9.2)')'ploto min,max',ndat,xmin,xmax,ymin,ymax
 
        call autotic( xtick, nx, xfmt, xmax, xmin)
        call autotic( ytick, ny, yfmt, ymax, ymin)
+       do i=1,ny
+         yval(i) = -ytick(i)
+       enddo
 
-       call frameb(xmin,xmax, xlx, nx, xtick, xtick, xfmt,
-     I             ymin,ymax, xly, ny, ytick, ytick, yfmt,
+
+       call frameb(xmin,xmax, xle, nx, xtick, xtick, xfmt,
+     I             ymin,ymax, yle, ny, ytick, yval, yfmt,
      I 1.5, 0.3, 'distance pixels' ,'distance pixels',
      I 'g_ROI_map_outliers.eps')
 
-       da(1) = xmin
+        da(1) = xmin
         db(1) = ymin
         da(2) = xmax
         db(2) = db(1)
@@ -3267,14 +3498,31 @@ c     call symbrgb(nplo, cpix, afn, rap, 0.0, 0.0, 0.0)
         db(4) = ymax
       call areargb(4,da,db, 0.40, 0.40, 0.40)  ! black background
 
-      return
-      end
+      do ij=1,ndat
+        da(1) = xk1(ij,1)
+       dd = diam*sqrt(xk1(ij,3)/(fil(1)+fil(2)))
+       if(brh(ij).gt.throutly) then
+        dd = 0.75*diam !max( dd, diamin*2)
+        call symbrgb(1, xk1(ij,1), -xk1(ij,4) , dd, 1.0, 0.2, 0.2)
+       elseif(brh(ij).lt.-throutly) then
+        dd = 0.8*diam !max( dd, diamin*2.5)
+        call symbrgb(1, xk1(ij,1), -xk1(ij,4) , dd, 0.0, 0.7, 1.0)
+       else
+        dd = max( dd, diamin)
+        call symbrgb(1, xk1(ij,1), -xk1(ij,4) , dd, 1.0, 1.0, 1.0)
+       endif
+      enddo
 
-      subroutine mkplote
+!     return
+!     end
+
+!     subroutine mkplote
 ! Author: Bernard Delley 2024
-      use esf_data
-      use plot_data
+!     use esf_data
+!     use plot_data
+!     use fit_data, only : domap
 
+!     if(domap) return
       dopos = .false.
       call endfrm( nx, xtick, ny, ytick)
       if(mprbay.gt.5) then
@@ -3792,11 +4040,15 @@ c     mod B.D.
         enddo
         conv=sqrt(conv)
        yfun = yfun + npar*0.5    ! 251030bd    now yfun, yfun/(ndat-npar) should only differ by rounding from zfun on conv
+
+      if(mprbay.gt.0) then
         write(6,'(a,i3,i5,i7,i7,2f12.3,2f12.6,i5,f9.3,f9.1,f9.0)')'conv'
      I ,iter,npar,ndat,k,zfun,yfun/(ndat-npar),conv,conw,iconv 
      I ,phi*pi2deg,fil(1),fil(2)
+      endif
         nsing = k
        if(mprbay.gt.2) then
+        write(6,'(a,2L2,9i5)')'ck_uxno',uxno,uanum,npar1,nes
         if(uxno.and.uanum) then
           write(6,'(a,i4,11x,(20f10.5))')'coefn',iter,(awr(i),i=1,npar1)
         elseif(uxno) then
@@ -3819,6 +4071,7 @@ c     mod B.D.
        endif
 
        call svdvar(vrk,npar,np,sngv,cvm,np,rv1)
+!      write(6,'(a,9f10.5)')'ck_RMS',(sqrt(cvm(i,i)),i=1,npar1)
         if(npar.gt.npar1) then
          do i=npar1+1,npar ! ncd
            rv1(i-npar1)= sqrt(cvm(i,i))
@@ -3990,7 +4243,8 @@ c     mod B.D.
         if(mprbay.gt.4) 
      I  write(6,'(a,i5,9f15.5)')'ck_xq',i,xq(i),xq(i)/np
       enddo
-      write(6,'(/a,i2,2i3,2i4,a,f6.1)')'#_OTF_model_Y [1-',
+!     write(6,'(/a,i2,2i3,2i4,a,f6.1)')'#_OTF_model_Y [1-',
+      write(6,'(/a,i2,2i3,2i4,a,f6.1)')'OTF_model_Y [1-',
      I naqs,nqm-2,nes,np,2*iroip,']'
 
       return

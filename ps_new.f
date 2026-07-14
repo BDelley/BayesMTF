@@ -1,6 +1,12 @@
+! Postscript graphics by Fortran calls
+!
+! Copyright 1987-2026 Bernard Delley
+!  Licensed under the Apache License, Version 2.0
+!
       module bgraph
         integer iout, ixlow, iylow, ixhigh, iyhigh
         real scalex,scaley,xmin,xmax,ymin,ymax,deltax,deltay
+        real xmaxs,xmins,ymaxs,ymins
       end module bgraph
 
       subroutine frameb(xmn,xmx,width, nxtick,xtick,xtval,xform,
@@ -68,7 +74,7 @@ c                               in page coordinates
         do j=1,itlen-4
           if(titv(j:j+1).eq.")s") k=k+20
         enddo
-        curx = 25. ! 58.     ! 260617bd
+        curx = 25.     ! 260617bd
         cury = deltay + (ymax-ymin)*0.5*scaley - wchar*itlen*0.5 +k
         write(iout,'(2f8.2,4a)')curx,cury,' m  gs 90 rotate (',titv,
      I  ') show gr'
@@ -188,8 +194,6 @@ c...
         character*(*) gfile
         real framewidth,linewidth
 	integer isiz               ! unit # , script siz
-!       integer   ixhigh, iyhigh
-!       common/bbox/ ixlow,iylow
 
 c...
 	iout=98
@@ -244,7 +248,9 @@ c	write(iout,'(a,i5,a)') '%%/LabelFont /Times-Roman findfont'
         write(iout,'(a,i5,a)') '/LbFnt {/Helvetica findfont'
      I  ,isiz,' scalefont setfont} def'
         write(iout,'(a,i5,a)') '/SFnt {/Helvetica findfont'
-     I  ,14,' scalefont setfont} def'
+     I  ,12,' scalefont setfont} def'
+        write(iout,'(a,i5,a)') '/TFnt {/Helvetica findfont'
+     I  ,6,' scalefont setfont} def'
         write(iout,'(a,i5,a)') '/BFnt {/Helvetica findfont'
      I  ,24,' scalefont setfont} def'
         write(iout,'(a,i5,a)') '/GFnt {/Symbol findfont'
@@ -257,6 +263,11 @@ c	write(iout,'(a,i5,a)') '%%/LabelFont /Times-Roman findfont'
         write(iout,'(a)') '/sL { show /LbFnt } def'
 	write(iout,'(/a)') 'LbFnt flw'
         write(iout,'(a)')' gs'
+
+      xmaxs = deltax+scalex*(xmax-xmin)
+      ymaxs = deltay+scaley*(ymax-ymin)
+      xmins = deltax
+      ymins = deltay
 
 	return
 	end
@@ -328,8 +339,8 @@ c its ok
         else
             write(iout,'(a,2f9.2,a)')'%',xp,yp,' m % out of bounds' !,xo,yo,thr
           mx = mx+1
-          if(mx.le.5) write(16,'(a,2f15.2,1p,2e11.2)')
-     I    ' move outside frame',xp,yp,x,y
+!         if(mx.le.5) write(16,'(a,2f15.2,1p,2e11.2)')
+!    I    ' move outside frame',xp,yp,x,y
           if(x.lt.xmin) xp = deltax
           if(y.lt.ymin) yp = deltay
           if(x.gt.xmax) xp = deltax+scalex*(xmax-xmin)
@@ -362,8 +373,8 @@ c its ok
           endif
         else
           mx = mx+1
-          if(mx.le.5) write(16,'(a,2f15.2,1p,2e11.2)')
-     I    ' line outside frame',xp,yp,x,y
+!         if(mx.le.5) write(16,'(a,2f15.2,1p,2e11.2)')
+!    I    ' line outside frame',xp,yp,x,y
         endif
 
 	return
@@ -383,7 +394,10 @@ c...
 
         xx = deltax+dx+scalex*(x-xmin)
         yy = deltay+dy+scaley*(y-ymin)
-        if( yy.lt.iyhigh .and. yy.ge.iyhigh-13) yy = iyhigh-13
+        if( yy.lt.iyhigh .and. yy.ge.iyhigh-13) yy = iyhigh-13     ! shift it in
+        if( xx.lt.ixhigh .and. xx-2*dx.gt.ixhigh) then
+           xx = ixhigh+2*dx ! shift it in
+        endif
 
         write(iout,'(2f8.2,4a)') xx,yy,' m ',string,' show'
         return
@@ -426,7 +440,7 @@ c  start   false= drawing actually has started
       use bgraph
       integer i,i1,i2,i3,n,j
       real x(*), y(*), x1,x2,y1,y2,xp,yp, xc,yc, xi,yi,thrd
-     I  , cut,x3,y3,xb,yb,xmaxs,ymaxs,val(4)
+     I  , cut,x3,y3,xb,yb,val(4)
 
       logical start, draw, drawnc, go_out, come_in, drawn,drawp
       character*2 sml
@@ -462,8 +476,6 @@ c  start   false= drawing actually has started
         write(iout,'(a,3i5)')'% reverse',i1,i2,i3
         start = .true.
       endif
-      xmaxs = deltax+scalex*(xmax-xmin)
-      ymaxs = deltay+scaley*(ymax-ymin)
       draw = .false.
       drawp = .false.
 
@@ -473,9 +485,12 @@ c  start   false= drawing actually has started
          drawnc = .false.
          x2 = x(i)
          y2 = y(i)
-
+!        write(iout,'(a,2L2,9(f10.2,f8.2))')'%ck_0',draw,drawp,
+!    I   x2,y2,x1,y1,xp,yp,xi,yi
            call fnd_border( xc,yc, x2,y2, x1,y1, xp,yp,
-     I     xmaxs,ymaxs,draw,drawp,xi,yi,sml,j)
+     I     draw,drawp,xi,yi,sml,j)
+!        write(iout,'(a,2L2,9(f10.2,f8.2))')'%ck_f',draw,drawp,
+!    I   xc,yc,xi,yi,xp,yp
          if(start) then
            xc = deltax+scalex*(x2-xmin)
            yc = deltay+scaley*(y2-ymin)
@@ -496,7 +511,7 @@ c  start   false= drawing actually has started
                call collinear( xc,yc, xi,yi, xp,yp, drawnc, thrd,val)
                if(drawnc) then
                  write(iout,'(2f8.2,2a,i6,9(f10.2,f8.2))') xi,yi,sml
-     I ,' %T',j,xc,yc,xp,yp,val
+!    I ,' %T',j,xc,yc,xp,yp,val
                  xp = xi
                  yp = yi
                  xi = xc    
@@ -519,7 +534,8 @@ c  start   false= drawing actually has started
              yp = yi
              xi = xc
              yi = yc
-!          write(iout,'(a,2L2,9(f10.2,f8.2))')'%ck_2',draw,drawn,xi,yi,xp,yp
+!     write(iout,'(a,2L2,9(f10.2,f8.2))')'%ck_2',draw,drawn,xi,yi,xp,yp
+             drawp=.true.
            endif
          endif
         x1 = x2
@@ -574,25 +590,24 @@ c xp,yp, xi,yi
       val(2)=zz
       val(3)=xx
       val(4)=yy
-      write(iout,'(a,L6,9(f10.2,f8.2))')'%ck_col',drawnc,
-     I xi,yi,xc,yc,xj,yj,xp,yp,val
+!     write(iout,'(a,L6,9(f10.2,f8.2))')'%ck_col',drawnc,
+!    I xc,yc,xi,yi,xp,yp,xa,ya,xb,yb,z0,zz,xx,yy
+!    I xi,yi,xc,yc,xj,yj,xp,yp,val
       return
       end
 
       subroutine fnd_border( xc,yc, x2,y2, x1,y1, xp,yp,
-     I  xmaxs,ymaxs,draw,drawp,xi,yi,sml,j)
+     I  draw,drawp,xi,yi,sml,j)
 
 ! input
 !  x2,y2 current orig coord
 
       use bgraph
-      real x2,y2, xb, yb, xc, yc, xp,yp, x1,y1, xmins,xmaxs, ymins,ymaxs
+      real x2,y2, xb, yb, xc, yc, xp,yp, x1,y1
       real xi,yi,xo,yo,xj,yj
       character*2 sml
       logical draw, drawp, drx, dry, go_out, come_in
 
-      xmins = deltax
-      ymins = deltay
       xb = deltax+scalex*(x2-xmin)   ! current  point
       yb = deltay+scaley*(y2-ymin)
       xc = deltax+scalex*(x1-xmin)   ! previous point
@@ -670,12 +685,14 @@ c xp,yp, xi,yi
 
       if(come_in) then
       if(drx.and.dry) then
-        sml = ' m'
+!       sml = ' m'
         write(iout,'(2f8.2,2a,9(f9.2,f8.2))') xc,yc,sml,' %fndi'
      I   ,xj,yj,xo,yo
         sml = ' l'
+          xi=xc
+          yi=xc
        if(.not.go_out) then
-        write(iout,'(2f8.2,2a,9(f9.2,f8.2))') xb,yb,sml,' %fnde' ! needed for g0.ps log9945_g
+!!      write(iout,'(2f8.2,2a,9(f9.2,f8.2))') xb,yb,sml,' %fnde' ! needed for g0.ps log9945_g ...A52
 !    I   ,xj,yj,xo,yo
        endif
         j=1                 ! does not work for case log9945_g g0.ps
@@ -824,9 +841,9 @@ c
           xp = deltax+scalex*(x(i)-xmin)
           yp = deltay+scaley*(y(i)-ymin)
 
-          if(xp+r.gt.deltax .and. xp-r.lt.cut .and. 
-     I       yp+r.gt.deltay .and. yp-r.lt.cut)      then
-c its ok
+          if(xp .gt. xmins .and. xp .lt. xmaxs .and.
+     I       yp .gt. ymins .and. yp .lt. ymaxs)      then
+
               write(iout,'(a,2f8.2,f7.2,a,3f5.2,a)')
      I        'n',xp,yp,r,' c',cr,cg,cb,' sf'
           endif
@@ -967,3 +984,77 @@ c       write(6,*)'ck_tick ',fmt,'<<',amax,amin,ntick,fs,i1,i2,ls,lr
 
         return
         end
+
+      subroutine hsl2rgb(r,g,b, h0,s0, gl0)
+
+c Author: B.Delley 2008
+
+c 2008 bd after http://en.wikipedia.org/wiki/HSV_color_space
+c 2010 bd modulo+limiter
+
+c input
+c  h    hue 0-360. color circle, 0-270 rainbow red-violet, 300=magenta
+c  s    saturation 0-1
+c  gl   lightness 0-1
+
+c output
+c   rgb values
+
+      h = mod( h0, 360.)
+      s = max(0.,min(s0,1.))
+      gl= max(0.,min(gl0,1.))
+
+      if(gl.lt.0.5) then
+        q = gl*(1+s)
+      else
+        q = gl+s-gl*s
+      endif
+      p = 2*gl-q
+      hn = h/360
+      ihn = hn
+      hn = hn - ihn
+      thrd = 1./3.
+
+      tr = hn + thrd
+      if(tr.gt.1) tr = tr-1
+      tg = hn
+      tb = hn - thrd
+      if(tb.lt.0) tb = tb+1
+
+      b1 = 1./6.
+      b2 = 0.5
+      b3 = 2./3.
+      if(tr.lt.b1) then
+        r = p+((q-p)*6*tr)
+      elseif(tr.lt.b2) then
+        r = q
+      elseif(tr.lt.b3) then
+        r = p+((q-p)*6*(b3-tr))
+      else
+        r = p
+      endif
+
+      if(tg.lt.b1) then
+        g = p+((q-p)*6*tg)
+      elseif(tg.lt.b2) then
+        g = q
+      elseif(tg.lt.b3) then
+        g = p+((q-p)*6*(b3-tg))
+      else
+        g = p
+      endif
+
+      if(tb.lt.b1) then
+        b = p+((q-p)*6*tb)
+      elseif(tb.lt.b2) then
+        b = q
+      elseif(tb.lt.b3) then
+        b = p+((q-p)*6*(b3-tb))
+      else
+        b = p
+      endif
+
+c     write(6,'(20f8.2)')h,s,gl,p,q,tr,tg,tb,r,g,b
+
+      return
+      end

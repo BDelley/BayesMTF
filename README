@@ -1,0 +1,66 @@
+This repo presents the source data and the Fortran program bayes_mtf implementing the method of the upcoming article
+B. Delley and Y.L. Delley, 
+"Bayesian approach to slanted edge modulation transfer function (MTF) measurements",
+J. Opt. Soc. Am. A 43, xx  (2026)
+
+bayes_mtf analyzes slanted edge image files of linear P2 type GrayMap files. The black level is implied to be zero.
+
+some DETAILS:
+
+Program output is with a file on std output and several
+.eps graphic files that can be incorporated into a latex publication
+and a edge_sfr_values.txt file, similar to mtf_mapper output as used in
+B. Delley and F. van den Bergh,
+"Fast full-field modulation transfer function analysis for photographic lens quality assessment",
+Applied Optics. 60 (8). 2197-2206 (2021)
+
+graphic eps output can be looked at on screen using gv like:
+gv  g_MTF_OTF.eps    
+
+running bayes_mtf can be simply like:
+
+bayes_mtf  pix_meas_f28_meridional_A52.pgm
+ 
+the specific input values, needed to reproduce section 5.2 of the article, are supplied and processed from the first comment line of the slanted edge image file.
+
+The input values on the first comment line override program internal default values.
+Explicit parameters given with the program call override default and comment line values.
+Documentation of call arguments is given at the begin of the bayes_mtf.f source.
+bayes_mtf output shows a call sequence with all parameter values that are in force.
+
+
+Preparing a linear .pgm file from a Nikon uncompressed or lossless-compressed NEF file:
+dcraw -D -4 -c DSC_????.NEF | pnmtoplainpnm > pix.pgm
+
+LibRaw is the successor of dcraw and covers a wider set of cameras:
+  unprocessed_raw $file | pnmtoplainpnm > pix.pgm
+
+in the case of Nikon Z8 generate a pix_crop.pgm file iw1-iw2 ih1-ih2 with black level subtraction iblack=1008
+bayes_mtf pix.pgm iw1 iw2 ih1 ih2 1008 
+
+Find black level by
+exiftool $ImageFile | grep -i black  
+
+
+SETUP:
+
+make requires gfortran. It can be installed  in Ubuntu:
+ sudo apt update
+ sudo apt install gfortran
+
+viewing .eps files can be done with gv. Installation in Ubuntu:
+ sudo apt install gv
+
+netpbm may be part of the distribution, else
+ sudo apt install netpbm
+
+dcraw
+ sudo apt install dcraw
+
+libraw
+ sudo apt install libraw-dev
+
+exiftool
+ sudo apt install libimage-exiftool-perl
+
+

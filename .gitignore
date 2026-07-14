@@ -38,6 +38,7 @@
 *.exe
 *.out
 *.app
+bayes_mtf
 
 # Build directories
 build/
@@ -57,6 +58,8 @@ compile_commands.json
 *.log
 *.bak
 *.swp
+log*
+*.eps
 
 # vcpkg
 vcpkg_installed/
