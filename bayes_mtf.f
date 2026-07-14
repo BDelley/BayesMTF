@@ -6,7 +6,7 @@
 ! Author: B. Delley 2022-2026
 !
 !  B. Delley and Y.L. Delley, "Bayesian approach to slanted edge modulation transfer function (MTF) measurements",
-!  J. Opt. Soc. Am. A 43, xx  (2026)
+!  J. Opt. Soc. Am. A 43(8), 1202-1209  (2026)
 !
 ! bayes_mtf analyzes slanted edge image files of linear P2 type GrayMap files (non de-Bayered) and with black level 0.
 ! a pgm maximum value up to 16383 is interpreted as a command to extract Bayer green from RGGB pixels.
@@ -157,12 +157,14 @@
       character*20 word
       logical edgeok,exst,do_out_sfr
 
-      write(6,'(/2a)')'Bayesian Approach to Slanted Edge',
-     I ' OTF and MTF Measurements, version 260701'
       write(6,'(/a)')'Cite work using this program as:'
-      write(6,'(a)')
-     I '  B. Delley and Y.L. Delley, J. Opt. Soc. Am. A 43, xx  (2026)'
-      write(6,'(a)')
+      write(6,'(/3a)')
+     I'Bayesian approach to slanted-edge modulation transfer function ',
+     I'measurements for lens and pixel-sensor systems'
+      write(6,'(2a)')
+     I '  B. Delley and Y.L. Delley,',
+     I ' J. Opt. Soc. Am. A 43(8), 1202-1209  (2026)'
+      write(6,'(/a/)')'  bayes_mtf version 20260714'
 
       call cpu_time(t0)      !   f95 intrinsic function
       call get_input
@@ -575,11 +577,12 @@
       phim = phi
 
       if(skipto) then
-      write(6,'(/2a)')'detailed call arguments in force:',
-     I'        |> accessible from call with skipto option'
+      write(6,'(/2a,i5,i3,a)')'detailed call arguments in force:',
+     I'   ( skipto',ktrps,kedgs,'    )'
       elseif(domap) then
-      write(6,'(/2a)')'detailed call arguments in force:',
-     I' (anum input remains accessible through pgm image comment'
+      
+      write(6,'(/5a)')'detailed call arguments in force:'
+     I,'     ( map )'
       else
       write(6,'(/a)')'detailed call arguments in force:'
       endif
@@ -1133,14 +1136,16 @@
 !    I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,8)
           itrpz(1,icase,ktrp) = itrpz(1,icase+4,ktrp)
           itrpz(2,icase,ktrp) = itrpz(2,icase+4,ktrp)
-        if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+!       if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+        if(mprtra.gt.2 )
      !  write(6,'(a,2i5,4x,4(i8,i5))')'ck_R1',ktrp,icase,
      I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,4)
         endif
 
         if(icross.gt.0) then
           itrpz(2,10,ktrp) = (i567+i785)*1000./itrpz(1,10,ktrp)    
-          if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+!         if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+          if(mprtra.gt.2)
      I    write(6,'(a,i5,i9,3(4(i8,i5),4x))')'ck_RC',ktrp,icross,
      I    ((itrpz(k1,k2,ktrp),k1=1,2),k2=1,10)
           do k2=1,4
@@ -1185,7 +1190,8 @@
         i123 = i11*i22 -i21*i12
         i341 = i13*i24 -i23*i14
         itrpz(2,10,ktrp) = (i123+i341)*1000./itrpz(1,10,ktrp)   ! expected quotient -2*1000
-      if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+!     if(mprtra.gt.2 .or. (skipto .and. ktrp.eq.ktrps))
+      if(mprtra.gt.2 )
      I  write(6,'(a,i5,i4,5x,3(4(i8,i5),4x))')'ck_RR',ktrp
      I ,nint(aside),((itrpz(k1,k2,ktrp),k1=1,2),k2=1,10)
         endif

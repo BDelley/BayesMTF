@@ -1,7 +1,7 @@
 This repo presents the source data and the Fortran program bayes_mtf implementing the method of the upcoming article
 B. Delley and Y.L. Delley, 
-"Bayesian approach to slanted edge modulation transfer function (MTF) measurements",
-J. Opt. Soc. Am. A 43, xx  (2026)
+"Bayesian approach to slanted-edge modulation transfer function measurements for lens and pixel-sensor systems"
+J. Opt. Soc. Am. A 43(8), 1202-1209 (2026)
 
 bayes_mtf analyzes slanted edge image files of linear P2 type GrayMap files. The black level is implied to be zero.
 
