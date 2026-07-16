@@ -1,4 +1,4 @@
-This repo presents the source data and the Fortran program bayes_mtf implementing the method of the upcoming article
+This repo presents the source data and the Fortran program bayes_mtf implementing the method of the article
 B. Delley and Y.L. Delley, 
 "Bayesian approach to slanted-edge modulation transfer function measurements for lens and pixel-sensor systems"
 J. Opt. Soc. Am. A 43(8), 1202-1209 (2026)
